@@ -20,6 +20,7 @@
  */
 import { clamp } from "@ship/math"
 import { solveLandingMpc, type MpcPlan, type MpcWeights } from "./mpc"
+import { NOSE_FIRST } from "./predictor"
 
 /** surface gravity at the pad (the same value the landing MPC integrates) */
 export const G_LAND = 9.79
@@ -176,6 +177,8 @@ export interface LandingOptions {
   readonly field?: LateralField | false
   /** true during the flip rotation: the body cannot follow a lateral law, so keep the MPC delivery */
   readonly flipping?: boolean
+  /** engine count the vertical profile is designed for (the staged burn may fly fewer now) */
+  readonly profileEngines?: number
 }
 
 /**
@@ -367,7 +370,7 @@ export const planLanding = (st: LandingState, l: LandingLimits, opt: LandingOpti
     // Two-phase vertical (fixed cruise decel then upright brake) + lateral MPC over the divert
     // window — the configuration that integrated best (7 m at the plane). Kept as the flight path
     // while the nonlinear solvers above are still being converged.
-    const aBrake = Math.max(mag.min - g, 0.6)
+    const aBrake = Math.max((opt.profileEngines && opt.profileEngines !== l.nEng ? (opt.profileEngines * l.thrustMin) / l.mass : mag.min) - g, 0.6)
     const zF = opt.zFinal && opt.zFinal > 2 ? opt.zFinal : Math.max(25, Math.min(400, pz * 0.2))
     const aCruise = opt.aCruise && opt.aCruise > 0.1 ? opt.aCruise : Math.max(0.6, (s * s - opt.vF * opt.vF) / (2 * Math.max(pz, 1)))
     const cruise = pz > zF
@@ -378,6 +381,11 @@ export const planLanding = (st: LandingState, l: LandingLimits, opt: LandingOpti
     // over-decelerates and the ship stalls/climbs above the pins. `uzTrim` was passed in but never
     // applied in this branch (review/02 L2).
     const uz = clamp((aCmd + g + 0.9 * (vT - vz)) * (opt.uzTrim && opt.uzTrim > 0 ? opt.uzTrim : 1), 0.5, mag.max)
+    // One-engine stage: a single SL at 100 % gives 18 m/s² (net +8.1), but the gimbal authority
+    // scales with thrust. While the sink is high, fly the engine hard (≈95 % of the magnitude cap)
+    // instead of the two-engine profile's ~60 %; once the sink is low, the normal feedback throttles
+    // down and tracks the profile for the stage-2 hand-over.
+    const uzCmd = l.nEng === 1 && !opt.flipping ? (NOSE_FIRST ? mag.min : Math.max(uz, 0.95 * mag.max)) : uz
     if (!cruise) return { u: terminalControl(st, l, opt.vF, aBrake), tgo, h: Math.max(tgo / 20, 1e-3), feasible: true, vertical: b, terminal: true, plan: null }
     const sF = Math.sqrt(opt.vF * opt.vF + 2 * aBrake * zF)
     const tDiv = Math.max(0.6, (Math.max(s - sF, 0)) / Math.max(aCruise, 0.2))
@@ -390,14 +398,14 @@ export const planLanding = (st: LandingState, l: LandingLimits, opt: LandingOpti
       // terminal law then flies north (+y) down the arm centreline. This enforces the *approach
       // direction*, not just the point: the ship cannot arrive from the tower side.
       pRefH: [0, -12], vRefH: [0, 0.4],
-      aZMin: 0, aZMax: 0, aMagMin: 0, aMagMax: 0.98 * lateralBudget(uz, l, mag), tanTilt: l.tanTilt,
+      aZMin: 0, aZMax: 0, aMagMin: 0, aMagMax: 0.98 * lateralBudget(uzCmd, l, mag), tanTilt: l.tanTilt,
       weak: null, aWeak: Infinity, uPrev: [st.a[0], st.a[1], 0], glide: 0,
       // across-arm x is the tight catch axis (±1 m); along-arm y has the whole 38 m rail span. Weight
       // x ≫ y so the terminal path runs down the arm centreline instead of trading x for y.
       weights: { qp: 0.0002, qv: 0.4, wvXY: 0, ru: 0.01, rd: 0.1, Qp: 60, Qv: 120, wX: 4, wY: 0.35, ...opt.weights },
       // trackable plan: the lateral thrust acceleration can only turn at |u|·ω (the body rotates the
       // thrust axis); starting from the realised lateral acceleration
-      slew: opt.slewRate && opt.slewRate > 0 ? { u0: [st.a[0], st.a[1], 0], rate: Math.max(Math.hypot(uz, lateralBudget(uz, l, mag)), mag.min) * opt.slewRate } : undefined,
+      slew: opt.slewRate && opt.slewRate > 0 ? { u0: [st.a[0], st.a[1], 0], rate: Math.max(Math.hypot(uzCmd, lateralBudget(uzCmd, l, mag)), mag.min) * opt.slewRate } : undefined,
     }, opt.warm ?? null, opt.slewRate && opt.slewRate > 0 ? 160 : 60)
     const field = opt.flipping ? false : opt.field
     const u2 = field
@@ -413,7 +421,7 @@ export const planLanding = (st: LandingState, l: LandingLimits, opt: LandingOpti
         const tauYEff = clamp(tgo, f.tauMin, f.tauY)
         const vrx = clamp(-(px + vx * f.tauLeadX) / tauXEff, -vCapX, vCapX)
         const vry = clamp(-(py - f.gateY + vy * f.tauLeadY) / tauYEff, -vCapY, vCapY)
-        const budget = 0.95 * lateralBudget(uz, l, mag)
+        const budget = 0.95 * lateralBudget(uzCmd, l, mag)
         const axNeed = (vrx - vx) / f.tauA
         const ayNeed = (vry - vy) / f.tauA
         // x (the ±1 m across-arm axis) has priority, but y may not be starved: reserve up to

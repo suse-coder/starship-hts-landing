@@ -1,7 +1,8 @@
 import { clamp, interp1, smoothstep } from "@ship/math"
 import { type V3, v3, ZERO } from "@ship/math"
-import type { VehicleConfig } from "@ship/craft"
+import type { AftFlapSet, VehicleConfig } from "@ship/craft"
 import { makePanels, type Panel } from "@ship/craft"
+import { aftFlapWrench, type AftFlapState } from "./flaps"
 
 /**
  * Aerodynamic loads by integration over the actual outer mould line, each element using its
@@ -27,6 +28,8 @@ export interface AeroModel {
   readonly lref: number
   readonly baseArea: number
   readonly wetted: number
+  /** optional deployable aft flaps; null on the flown baseline */
+  readonly aftFlaps: AftFlapSet | null
 }
 
 export const makeAeroModel = (v: VehicleConfig): AeroModel => {
@@ -41,7 +44,7 @@ export const makeAeroModel = (v: VehicleConfig): AeroModel => {
   }
   const wetted = panels.filter((p) => p.station >= 0).reduce((s, p) => s + p.area, 0)
   const R = v.shape.p.radius
-  return { panels, strips, sref: Math.PI * R * R, lref: v.shape.p.length, baseArea: Math.PI * R * R, wetted }
+  return { panels, strips, sref: Math.PI * R * R, lref: v.shape.p.length, baseArea: Math.PI * R * R, wetted, aftFlaps: v.aftFlaps }
 }
 
 const CA0_M = [0, 0.6, 0.8, 0.95, 1.05, 1.2, 1.5, 2, 3, 4, 6, 10]
@@ -60,6 +63,8 @@ export interface AeroInput {
   readonly cpMax: number
   readonly enginesOn: boolean
   readonly knudsen: number
+  /** deployable aft flap state; omitted/zero means stowed */
+  readonly flaps?: AftFlapState
 }
 
 export interface AeroOut {
@@ -90,6 +95,12 @@ export const aeroWrench = (m: AeroModel, inp: AeroInput): AeroOut => {
   const mach = V / inp.a
   const wN = smoothstep(2.5, 5.5, mach)
   let Fx = 0, Fy = 0, Fz = 0, Mx = 0, My = 0, Mz = 0
+  // deployable aft flaps: independent of the continuum blend (the model is a local flat plate)
+  if (m.aftFlaps && inp.flaps) {
+    const flap = aftFlapWrench(m.aftFlaps, inp.flaps, { vAir, w, rho, xcg })
+    Fx += flap.F.x; Fy += flap.F.y; Fz += flap.F.z
+    Mx += flap.M.x; My += flap.M.y; Mz += flap.M.z
+  }
   // rarefied flow: Cp,max → 2 (free molecular, diffuse/specular blend), friction rises
   const fm = smoothstep(0.1, 10, inp.knudsen)
   if (wN > 0) {

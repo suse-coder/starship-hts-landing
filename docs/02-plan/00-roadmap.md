@@ -12,7 +12,7 @@ the earlier `CAUGHT` was a false catch (arms open, 12.8 m off) and is retracted.
 
 | Area | Current state | Evidence |
 |---|---|---|
-| **M3 — catch** | **OPEN — `lost`.** No true `caught`. | Latest closed-loop lateral field: **37.5 m** off (36.0 across / 10.6 along), 29.2 m/s, body **73.3°** off E–W, southward arrival, `lost` (MPC worker, 2026-11-21). Integrated mission: 11 m off, climbing 3.0 m/s (`.tmp/mission_verify.log`). Best full-6-DOF optimiser candidate: **6.8 m lateral / 11.7 m/s**, `lost` ([bench/02](../05-benchmarks/02-optimizer.md)). Direction-gate sweeps: best 153.3 m lateral (`.tmp/review/smooth.log`); best across-arms 7.7 m but 230.6 m along (`.tmp/review/gate1500v2.log`). |
+| **M3 — catch** | **OPEN — `lost`.** No true `caught`. | Active no-flap belly-first sequence (2026-11-21): **5150 m** off, 68.3 m/s, roll 60°, arms open; tile 1671 K (under 1673), bondline 678 K (over), steel 285–363 K; `lost`. Latest closed-loop lateral field: **37.5 m** off (36.0 across / 10.6 along), 29.2 m/s, body **73.3°** off E–W, southward arrival, `lost` (MPC worker, 2026-11-21). Integrated mission: 11 m off, climbing 3.0 m/s (`.tmp/mission_verify.log`). Best full-6-DOF optimiser candidate: **6.8 m lateral / 11.7 m/s**, `lost` ([bench/02](../05-benchmarks/02-optimizer.md)). Direction-gate sweeps: best 153.3 m lateral (`.tmp/review/smooth.log`); best across-arms 7.7 m but 230.6 m along (`.tmp/review/gate1500v2.log`). |
 | **TPS** | **Over the LI-900 limits.** | Latest sweeps: tile **1650 K** vs 1530 K, bondline **695 K** vs 560 K, backing 363 K (pass); `.tmp/review/gate150*.log`, `smooth.log`. Integrated run: tile 1684 K, bondline 701 K (`.tmp/mission_verify.log`). The sourced SpaceX tile claim is 1673 K; the design uses the conservative LI-900 1530 K limit. |
 | **T‑mc** | **Not run.** | No Monte Carlo ensemble exists; a nominal catch would not close T09 anyway. |
 | **Typecheck** | Clean. | `bun run typecheck`, 2026-11-21. |
@@ -35,6 +35,20 @@ the earlier `CAUGHT` was a false catch (arms open, 12.8 m off) and is retracted.
 - The UI/rendering features above are complete; they do not compensate for the missing catch.
 - **M3 and M8 are intentionally not ticked.** Do not mark either as done until the release gate in
   spec/11 is satisfied.
+
+## Fast iteration (T17, 2026-11-21)
+
+The edit loop is **module-first**. A local change must be proven by the owning package test or the
+controller bench; the full 6-DOF mission is the integration/release gate, not the inner loop. See
+`docs/03-spec/12-testability.md`.
+
+- [x] `bash scripts/quick-check.sh` — tower contact, gnc landing/guidance, score, MPC/model bench; no full mission.
+- [x] `bun scripts/mpc-bench.ts` — PD+FF / ZEM-ZEV / two-phase MPC / PDG / open-loop / bang-bang on
+      one real thrust/mass/gimbal plant; 17/17 model checks exact.
+- [x] Synthetic score fixtures (rail-plane crossing) and tower contact fixtures; no entry run.
+- [~] Catch-only sub-second harness beyond the tower/landing unit tests (the contact worker is adding
+      the direct “drive a hull into the tower” test).
+- [x] Full mission is documented as tier 3 / release only; not required for docs/UI/local edits.
 
 ## Release checklist (blocked)
 
@@ -190,6 +204,7 @@ flowchart TD
 | T14 MHD-only steering incl. roll (R11a) | agent E | `gnc/src/guidance.ts`, `gnc/src/mhdAlloc.ts` | T11 | [ ] cold-gas fallback still open |
 | T15 recording cache | orchestrator | `app/vite.config.ts`, `app/src/simCache.ts`, `app/src/main.ts`, `app/index.html` | – | [~] implemented; reload verification pending |
 | T16 integrate T03 + T04 | orchestrator | `view/src/ship.ts`, `view/src/env.ts`, `view/src/index.ts`, `tower/src/tower.ts` | T03, T04 | [x] typecheck clean; visual check in V5/V6 |
+| T17 modular fast iteration | orchestrator | `docs/03-spec/12-testability.md`, `scripts/quick-check.sh`, `scripts/mpc-bench.ts` | – | [x] tier 0–1 gate + catch/guidance/thrust/score map; full mission is integration only |
 
 ## M5 — realistic rendering (spec/04 A4)
 

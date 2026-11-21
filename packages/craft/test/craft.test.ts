@@ -10,11 +10,12 @@
  *  - On-axis loop field B = μ0 N I a² / (2 (a² + z²)^{3/2}); loop inductance L = μ0 a N² (ln(8a/gmd) − 2)
  *    (Grover); stored energy ½ L I²; dump time constant τ = L/R.
  *  - Rocket thrust F = ṁ Isp g0, F_SL = F_vac − p_SL A_e (Sutton & Biblarz, Rocket Propulsion Elements);
- *    Raptor 3 sea level 2.45 MN, Isp 350 s; N₂ cold gas Isp ≈ 73 s (Wertz & Larson, SMAD).
+ *    Raptor 3 SL 250 tf = 2.45 MN, 1,525 kg, Isp 350 s (SpaceX Starship V3 update 2026-05-12; Isp is
+ *    an assumption); N₂ cold gas Isp ≈ 73 s (Wertz & Larson, SMAD).
  */
 import { describe, expect, test } from "bun:test"
 import { v3, cross, sub, norm, type V3 } from "@ship/math"
-import { MU0, G0 } from "@ship/earth"
+import { MU0, G0, atmosphere } from "@ship/earth"
 import {
   makeVehicle, makePanels, wettedArea, planform, massProps, dryMass, initialConsumables, designCoil, DEFAULT_DESIGN,
   fVac100, ispVac, engineThrust, engineStep, engineOff, rcsWrench, type Consumables,
@@ -171,6 +172,40 @@ describe("Raptor 3 (sea level) and cold-gas RCS", () => {
     expect(vac.thrust).toBeCloseTo(fVac100(e), 3)
     expect(sl.mdot).toBeCloseTo(vac.mdot, 9)
     expect(sl.thrust / (sl.mdot * G0)).toBeCloseTo(350, 6) // F = ṁ Isp g0
+  })
+
+  test("Raptor 3 SL flight spec: 250 tf / 1,525 kg, 1.30 m exit, Isp_vac 369 s", () => {
+    // SpaceX "Introducing Starship V3" (2026-05-12): 250 tf SL, 275 tf RVac, 1,525 kg.
+    // The 2.75–2.8 MN figures are the 2024 development target, not the flight engine.
+    expect(e.thrustSL).toBe(2.45e6)
+    expect(v.components.find((c) => c.id === "rsl")?.mass).toBe(3 * 1525)
+    expect(2 * Math.sqrt(e.exitArea / Math.PI)).toBeCloseTo(1.3, 2) // 1.33 m² ⇒ Ø 1.30 m
+    expect(e.thrustSL / (1525 * G0)).toBeCloseTo(164, 0) // engine-only T/W, Wikipedia 163.9
+    expect(ispVac(e)).toBeCloseTo(369.25, 2)
+  })
+
+  test("minimum-throttle floor: 2 SL at 40 % still exceeds weight at 135 t (no hover)", () => {
+    const st = { on: true, spool: 1, throttle: 0.4, gp: 0, gy: 0 }
+    const w135 = 135_000 * G0
+    const t2Sl = 2 * engineThrust(e, st, atmosphere(0).p, 25).thrust
+    const t2Km = 2 * engineThrust(e, st, atmosphere(1000).p, 25).thrust
+    expect(t2Sl / w135).toBeCloseTo(1.358, 2)
+    expect(t2Km / w135).toBeCloseTo(1.381, 2)
+    expect(t2Sl).toBeGreaterThan(w135)
+    expect((3 * engineThrust(e, st, atmosphere(0).p, 25).thrust) / w135).toBeCloseTo(2.037, 2)
+    // 40 % of rated sea-level thrust is not 0.4·F_SL: the ambient back-pressure term does not
+    // scale with throttle (F = τ·F_vac − p∞·A_e), so the floor is 0.899 MN, not 0.980 MN.
+    expect(engineThrust(e, st, atmosphere(0).p, 25).thrust).toBeLessThan(0.4 * e.thrustSL)
+  })
+
+  test("landing propellant flow: 713.8 kg/s per engine at 100 %, 285.5 at 40 %", () => {
+    const full = engineThrust(e, { on: true, spool: 1, throttle: 1, gp: 0, gy: 0 }, 0, 25)
+    const min = engineThrust(e, { on: true, spool: 1, throttle: 0.4, gp: 0, gy: 0 }, 0, 25)
+    expect(full.mdot).toBeCloseTo(713.8, 1)
+    expect(min.mdot).toBeCloseTo(285.5, 1)
+    // 26 t header, two engines: 18.2 s at full thrust, 45.5 s at the 40 % floor
+    expect(26_000 / (2 * full.mdot)).toBeCloseTo(18.2, 1)
+    expect(26_000 / (2 * min.mdot)).toBeCloseTo(45.5, 1)
   })
 
   test("gimballed thrust: |F| = thrust, moment M = r × F about the CG", () => {

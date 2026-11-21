@@ -142,6 +142,10 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   // ---- engines (detailed) + plumes
   const plumes: { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; len: number; exitR: number }[] = []
   const slGroups: THREE.Group[] = []
+  // The recording samples thrust at 25 Hz. Applying it raw makes the plume length/throttle step at
+  // 25 Hz (the user's "30 Hz flicker"); low-pass every plume driver like the RCS puffs.
+  const thrustSm = new Float64Array(v.engines.filter((e) => e.kind === "SL").length)
+  let pAmbSm = 101325
   for (const e of v.engines) {
     const rp = makeRaptor(e.kind === "SL" ? "SL" : "RVac")
     const g = new THREE.Group()
@@ -324,19 +328,23 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       lastMode = f.thermalMode
     }
     // plumes (length grows as the ambient pressure falls: under-expanded at altitude)
-    const pRatio = Math.min(f.pAmb / 101325, 1)
+    const pRatioRaw = Math.min(f.pAmb / 101325, 1)
+    pAmbSm += (pRatioRaw - pAmbSm) * 0.12
+    const pRatio = Math.max(0, Math.min(1, pAmbSm))
     const expand = 1 + 2.5 * (1 - pRatio)
     slGroups.forEach((g, i) => {
       g.rotation.set(0, f.gp, f.gy)
       const T = f.thrust[i] ?? 0
+      thrustSm[i] += (T - thrustSm[i]) * 0.18
+      const Tsm = thrustSm[i]
       const p = plumes[i]
-      const len = (T / 2.45e6) * 32 * expand
-      p.mesh.visible = T > 1e4 && !p.mesh.userData.off
+      const len = (Tsm / 2.45e6) * 32 * expand
+      p.mesh.visible = Tsm > 1e4 && !p.mesh.userData.off
       p.mesh.scale.set(1 + 0.5 * (expand - 1), len, 1 + 0.5 * (expand - 1))
       p.mesh.position.x = -p.len - len / 2
       p.mat.uniforms.uTime.value = f.time
       p.mat.uniforms.uPamb.value = pRatio
-      p.mat.uniforms.uThrottle.value = Math.min(1, T / 1.5e6)
+      p.mat.uniforms.uThrottle.value = Math.min(1, Tsm / 1.5e6)
     })
     puffs.forEach((m, i) => {
       const target = Math.min(1, f.rcsDuty[i] ?? 0)

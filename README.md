@@ -41,10 +41,11 @@ faked `caught`.
 | Item | State (2026-11-21) |
 |---|---|
 | M3 — flip, landing, terminal, catch | **OPEN — no true catch** |
+| Latest no-flap belly-first run (active sequence, 2026-11-21) | `lost`: **5150 m** off, **68.3 m/s**, roll 60°, arms open. Tile **1671 K** (under the 1673 K SpaceX claim), bondline **678 K** (over 560 K), steel 285–363 K |
 | Latest lateral-field law (MPC worker, 2026-11-21) | `lost`: **37.5 m** off at the rail plane, 29.2 m/s, body **73°** off E–W; the direction gate rejects the southward arrival |
 | Recorded integrated mission (14:08 log) | `lost`: pins at the rail plane, 11 m off, climbing 3.0 m/s |
 | Best full-6-DOF optimiser candidate | `lost`: 6.8 m lateral, 11.7 m/s contact (bench/02) |
-| TPS | **over the LI-900 limits**: tile 1650–1684 K vs 1530 K; bondline 695–701 K vs 560 K; backing passes |
+| TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K (**+23 K**, best run); 1684 K is −11 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
 | T‑mc (20-run wind/κ/B/mass ensemble) | **not run** |
 | Typecheck | clean (`bun run typecheck`) |
 | Tests | 238 pass, 2 todo, 0 fail across 22 files (`bun test packages`) |
@@ -89,6 +90,7 @@ bun run dev        # Vite dev server on http://localhost:5199
 bun run typecheck  # tsc --noEmit, strict
 bun run test       # bun test packages
 bun run build      # production build of packages/app
+bash scripts/quick-check.sh  # fast module gate: tower/gnc/score + MPC/model bench (no full mission)
 ```
 
 Other entry points:
@@ -98,6 +100,10 @@ bun run mission                # one full mission in Bun, prints the phase log a
 bun scripts/bench.ts           # run-time benchmark per phase (bench/01)
 bun scripts/optimize.ts        # fast 3-DOF screen + full 6-DOF certification (bench/02)
 ```
+
+The module-first iteration rule and the “catch fails — test only the catch” recipe are in
+[docs/03-spec/12-testability.md](docs/03-spec/12-testability.md): full missions are the integration
+gate, not the edit loop.
 
 Heavy runs (mission, optimiser, headless browser) should follow
 [docs/05-benchmarks/00-machine-budget.md](docs/05-benchmarks/00-machine-budget.md): `nice -n 19`, one

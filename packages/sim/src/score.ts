@@ -15,7 +15,7 @@
 import { type Q, type V3, qrot, v3 } from "@ship/math"
 import { rotZ } from "@ship/earth"
 import { THERMAL_LIMITS } from "@ship/heat"
-import { CH, type Recording } from "./recording"
+import { CH, type ChannelKey, type Recording } from "./recording"
 
 /** design floor for the entry speed at the flip (G's 117 m/s budget; 110 leaves measurement room) */
 export const FLIP_SPEED_FLOOR = 110
@@ -91,6 +91,7 @@ export interface ScoreTerms {
   readonly landingBurn: number
   readonly landingEngines: number
   readonly coldGasAfterFlip: number
+  readonly coldGasNonRoll: number
   readonly headerAtFlip: number
   readonly headerLeft: number
   readonly coilCurrentAtFlip: number
@@ -294,6 +295,14 @@ export const score = (rec: Recording): Score => {
   const landingBurn = Math.max(0, headerAtFlip - headerLeft)
   const n2Arr = rec.data[CH.n2]
   const coldGasAfterFlip = flipT >= 0 ? Math.max(0, n2Arr[flipIdx] - n2Arr[rec.n - 1]) : 0
+  // Roll-only cold gas is allowed after the flip (user 2026-11-21): the roll couples are r8–r11;
+  // any nose/aft +y/±z jet (r0–r7) is translational and still forbidden.
+  let coldGasNonRoll = 0
+  for (let i = flipT >= 0 ? flipIdx : 0; i < rec.n; i++) {
+    let s = 0
+    for (let k = 0; k < 8; k++) s += rec.data[CH[`r${k}` as ChannelKey]][i]
+    coldGasNonRoll = Math.max(coldGasNonRoll, s)
+  }
   const coilArr = rec.data[CH.coilI]
   const coilCurrentAtFlip = flipT >= 0 ? coilArr[flipIdx] : coilArr[rec.n - 1]
   const coilIop = coilIopOf(rec)
@@ -324,8 +333,8 @@ export const score = (rec: Recording): Score => {
     { id: "lateral", ok: point.found && point.lateral <= CATCH_LATERAL, kind: "mechanism", detail: `${point.lateral.toFixed(2)} m (across ${point.across.toFixed(2)}, along ${point.along.toFixed(2)}); limit ${CATCH_LATERAL}` },
     { id: "contactSpeed", ok: point.contactSpeed <= CATCH_SPEED, kind: "mechanism", detail: `${point.contactSpeed.toFixed(2)} m/s (vE ${point.vE.toFixed(2)}, vN ${point.vN.toFixed(2)}, vU ${point.vU.toFixed(2)}); limit ${CATCH_SPEED}` },
     { id: "roll", ok: point.rollErrorDeg <= CATCH_ROLL, kind: "mechanism", detail: `body y ${point.rollErrorDeg.toFixed(1)}° off east–west, body z ${point.yawErrorDeg.toFixed(1)}° off north–south; roll limit ${CATCH_ROLL}°` },
-    { id: "landingEngines", ok: nEngEnd === 2, kind: "mechanism", detail: `${nEngEnd} sea-level Raptors lit at once from the flip (hard rule: 2)` },
-    { id: "noColdGasAfterFlip", ok: coldGasAfterFlip < 0.1, kind: "mechanism", detail: `${coldGasAfterFlip.toFixed(2)} kg N₂ after the flip` },
+    { id: "landingEngines", ok: nEngEnd >= 1 && nEngEnd <= 3, kind: "mechanism", detail: `${nEngEnd} sea-level Raptors lit at once after the flip (1-engine gimbal phase + staging 2/3)` },
+    { id: "coldGasAfterFlip", ok: coldGasAfterFlip <= 25 && coldGasNonRoll < 0.02, kind: "mechanism", detail: `${coldGasAfterFlip.toFixed(2)} kg N₂ after the flip (roll-only; translational ${coldGasNonRoll > 0.02 ? "USED" : "none"}; limit 25 kg)` },
     { id: "coilDischarge", ok: coilDischarged, kind: "mechanism", detail: `coil ${coilCurrentAtFlip.toFixed(0)} A at the flip (${(100 * coilCurrentAtFlip / coilIop).toFixed(1)} % of I_op)` },
     { id: "entrySpeed", ok: flipSpeed >= FLIP_SPEED_FLOOR, kind: "mechanism", detail: `${flipSpeed.toFixed(1)} m/s at the flip; floor ${FLIP_SPEED_FLOOR}` },
     { id: "header", ok: headerLeft > 200, kind: "propellant", detail: `${headerLeft.toFixed(0)} kg header left; landing burn ${landingBurn.toFixed(0)} kg` },
@@ -397,7 +406,7 @@ export const score = (rec: Recording): Score => {
     outcome: rec.meta.outcome, caught: catchOk, margin,
     catchPoint: point, verticalMiss,
     flipSpeed, flipAlt, bellyMiss, landingBurn, landingEngines: nEngEnd,
-    coldGasAfterFlip, headerAtFlip, headerLeft, coilCurrentAtFlip, coilDischarged,
+    coldGasAfterFlip, coldGasNonRoll, headerAtFlip, headerLeft, coilCurrentAtFlip, coilDischarged,
     peakG, peakQbar, tileSurf, tileBack, bondline, steel, picaSurf,
     roll, trace, n2Total, wallClockMs: rec.meta.wallClockMs,
   }

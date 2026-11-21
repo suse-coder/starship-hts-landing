@@ -45,11 +45,25 @@ export const pitchUpDue = (q: number, qPrev: number, V: number, c: { readonly qP
  * pushes the lift past the target and degrades the belly-flop delivery. Without damping the swing was
  * 64.3 → 48.4 → 51.1 km (≈ 200 s period, ζ ≈ 0.5 from two swings).
  */
+/** Nose-first (alpha = 0) mode: no high-alpha lift, no belly-flop lift. The high-alpha mode remains the default. */
+export const NOSE_FIRST = false
 export const GLIDE_DAMPING = {
   zeta: 0.3,
   cosMin: -0.5, // the modulation may roll the lift to |σ| ≤ 120° (lift partly down) to stop a climb
   cosRefMin: 0.2, // |σ₀| > 78.5°: no equilibrium glide, no modulation
   hdotRefMin: -400, // m/s
+  /**
+   * High-α descent guard (ADR-08). The damped law alone still lets the post-pitch-up lift (~2–3 G)
+   * zoom the ship: 6-DOF measured 52.3 → 57.0 km and a +70–80 m/s ḣ plateau for ~100 s. When the sink
+   * is shallower than `hdotGuard`, cap the vertical lift component at G − `descentMargin` so the net
+   * vertical acceleration is downward. Gated on ḣ so a fast sink can still un-bank (the guard is a
+   * climb stopper, not a permanent extra deceleration). High-α only: the entry/loft lift-up is what
+   * sets the range and the heat pulse, and must not be capped.
+   */
+  descentMargin: 3.5, // m/s² of net downward acceleration while the guard is active
+  hdotGuard: -10, // m/s: hard monotonic-descent target (no positive ḣ interval)
+  hdotBand: 1, // m/s: narrow ramp so the guard is effectively hard but not discontinuous
+  liftSafety: 1.3, // measured lift / table lift (measured 1.2–1.6 g vs ~1.1 g table)
 } as const
 
 /** local density scale height H = −1 / (d ln ρ / dh) of the guidance atmosphere (m) */
@@ -100,7 +114,7 @@ export interface GlideState {
 }
 
 /** bank magnitude of the damped high-α law around the corrector's |σ₀| (rad, 0…π) */
-export const dampedBank = (mag0: number, s: GlideState, sref: number, zeta: number = GLIDE_DAMPING.zeta): number => {
+export const dampedBank = (mag0: number, s: GlideState, sref: number, zeta: number = GLIDE_DAMPING.zeta, descentMargin = 0): number => {
   const aL = (s.q * sref * s.CL) / s.mass
   if (aL < 0.5 || s.V < 300) return mag0 // no usable lift: nothing to modulate
   const c0 = Math.cos(mag0)
@@ -113,11 +127,19 @@ export const dampedBank = (mag0: number, s: GlideState, sref: number, zeta: numb
   const ld = Math.max(s.CL / Math.max(s.CD, 1e-3), 0.1)
   const hdRef = Math.max(-(2 * H * g) / (s.V * ld * c0), GLIDE_DAMPING.hdotRefMin)
   const k = 2 * zeta * Math.sqrt(G / H)
-  // Monotonic-descent bound (user 2026-11-21) was trialled here and reverted: see the report — capping
-  // cos σ ≤ (G − margin)/a_L removes the high-α hold but cannot prevent the bank-reversal zoom, and it
-  // costs ~650 m of delivery. The entry's shallow lift-up is required for the range/heat (forcing the
-  // entry bank ≥ 46° drove the transition q from 14 to 64–90 kPa).
-  return Math.acos(clamp(c0 + (k * (hdRef - s.hdot)) / aL, Math.min(c0, GLIDE_DAMPING.cosMin), 1))
+  let cT = c0 + (k * (hdRef - s.hdot)) / aL
+  // High-α-only descent guard: while the sink is shallower than `hdotGuard`, the vertical lift may not
+  // exceed G − descentMargin. It is a ceiling on cos σ (a floor on |σ|), applied only to the high-α
+  // call sites; entry/loft/pitch-up pass descentMargin = 0 and are unchanged. The activation is ramped
+  // over `hdotBand` so a sink hovering near the threshold does not chatter the bank.
+  if (descentMargin > 0 && aL > G) {
+    const active = clamp((s.hdot - GLIDE_DAMPING.hdotGuard) / GLIDE_DAMPING.hdotBand, 0, 1)
+    if (active > 0) cT = Math.min(cT, (G - descentMargin * active) / (aL * GLIDE_DAMPING.liftSafety))
+  }
+  // Monotonic-descent bound (user 2026-11-21) was trialled here and reverted: see the report — an
+  // entry-wide cap removes the high-α hold but cannot prevent the bank-reversal zoom and costs ~650 m
+  // of delivery. The high-α guard above is the narrower replacement.
+  return Math.acos(clamp(cT, GLIDE_DAMPING.cosMin, 1))
 }
 
 export interface PredContext {
@@ -235,7 +257,7 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
     const signedPhase = signed && (phase === "highAlpha" || phase === "belly")
     // high-α: the damped bank law around |σ₀| = bankHigh (same law as the flight, GLIDE_DAMPING)
     let bankH = inp.bankHigh
-    if (phase === "highAlpha" && h < 120e3) {
+    if ((phase === "highAlpha" || phase === "belly") && h < 120e3) {
       const vr0 = airVel(r, v, h)
       const V0 = norm(vr0)
       if (V0 > 1) {
@@ -244,7 +266,7 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
         const at0 = atmosphere(h)
         const M0 = V0 / at0.a
         const co0 = aeroLookup(c.aero, passiveTrim(c.aero, M0), M0)
-        bankH = dampedBank(inp.bankHigh, { h, hdot: dot(upG, vr0), V: V0, r: norm(r), q: 0.5 * at0.rho * V0 * V0, CL: co0.CL, CD: co0.CD, mass: inp.mass }, c.sref, c.glideZeta)
+        bankH = dampedBank(inp.bankHigh, { h, hdot: dot(upG, vr0), V: V0, r: norm(r), q: 0.5 * at0.rho * V0 * V0, CL: co0.CL, CD: co0.CD, mass: inp.mass }, c.sref, c.glideZeta, GLIDE_DAMPING.descentMargin)
       }
     }
     if (signedPhase) {
@@ -258,7 +280,7 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       const right0 = cross(vh, upP0)
       if (lv === null) lv = add(scale(upP0, Math.cos(sg)), scale(right0, Math.sin(sg)))
       lv = normalize(sub(lv, scale(vh, dot(lv, vh))))
-      const target = (t < tRev ? inp.bankSign! : -inp.bankSign!) * (phase === "highAlpha" ? bankH : inp.bankHigh)
+      const target = (t < tRev ? inp.bankSign! : -inp.bankSign!) * (phase === "highAlpha" || phase === "belly" ? bankH : inp.bankHigh)
       const lt = add(scale(upP0, Math.cos(target)), scale(right0, Math.sin(target)))
       const th = Math.atan2(dot(cross(lv, lt), vh), dot(lv, lt))
       const d = clamp(th, -rate * dt, rate * dt)
@@ -277,7 +299,8 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       const q = 0.5 * a.rho * V * V
       let alpha: number
       let bank: number
-      if (phase === "entry" || phase === "coast") { alpha = c.alphaNoseFirst(V); bank = inp.bankEntry }
+      if (NOSE_FIRST) { alpha = 0; bank = 0 }
+      else if (phase === "entry" || phase === "coast") { alpha = c.alphaNoseFirst(V); bank = inp.bankEntry }
       else if (phase === "loft") { alpha = c.alphaNoseFirst(V); bank = 0 }
       else if (phase === "highAlpha") { alpha = passiveTrim(c.aero, M); bank = bankH }
       else { alpha = passiveTrim(c.aero, M); bank = 0 }

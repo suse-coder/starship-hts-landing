@@ -33,6 +33,9 @@ const PRESETS: Readonly<Record<string, Preset>> = {
   arms: { cam: enu(-30, -34, 122), target: enu(0, 3, 109), fov: 50, open: 0.55, ship: false, shadowAt: enu(0, 5, 105), shadowR: 60 },
   base: { cam: enu(-40, -70, 24), target: enu(0, -6, 9), fov: 50, open: 1, ship: false, shadowAt: enu(0, -10, 0), shadowR: 90 },
   ship: { cam: enu(-95, -125, 78), target: enu(0, 4, 92), fov: 42, open: 0, ship: true, shadowAt: enu(0, 5, 60), shadowR: 110 },
+  // M5 V-truss verification: along +n into the open arms, and a pad-level three-quarter from below.
+  endon: { cam: enu(0, -50, 111.0), target: enu(0, -5, 110.6), fov: 40, open: 0.55, ship: false, shadowAt: enu(0, 0, 110), shadowR: 80 },
+  vtruss: { cam: enu(-52, -58, 107), target: enu(0, 0, 110.5), fov: 45, open: 0.55, ship: false, shadowAt: enu(0, 0, 110), shadowR: 80 },
 }
 
 const q = new URLSearchParams(location.search)

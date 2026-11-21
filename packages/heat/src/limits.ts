@@ -19,7 +19,8 @@ export const THERMAL_LIMITS = {
   steelDesign: 1150,
   steelFail: 1400,
   bondline: 560,
-  tileSurface: 1530, // LI-900/HRSI maximum use temperature (Q23); sourced SpaceX claim 1673 K is in TILE_MATERIAL_OPTIONS.starshipHex
+  tileSurface: 1673, // SpaceX flight-tile claim (1400 °C), user decision 2026-11-21
+  tileSurfaceConservative: 1530, // NASA LI-900/HRSI design margin, reported alongside the flight claim
   tileBond: 600, // RTV-class tile adhesive, assumed (Q23; conservative alternative 560)
 } as const
 

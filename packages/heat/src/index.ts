@@ -2,3 +2,4 @@
 export * from "./heating"
 export * from "./thermal"
 export * from "./limits"
+export * from "./flaps"

@@ -21,6 +21,140 @@ export interface DesignParams {
   readonly windScale: number
   readonly turbulence: number
   readonly seed: number
+  /**
+   * Optional deployable aft flap set (3 grid-fin/body-flap surfaces at the engine end).
+   * Absent or `enabled: false` leaves the flown baseline exactly unchanged.
+   */
+  readonly aftFlaps?: AftFlapDesign
+}
+
+/**
+ * Geometry and assumptions for the optional deployable aft flap set.
+ *
+ * The surfaces are simplified as flat grid-fin/body-flap plates on a circumferential hinge near
+ * the engine section. They fold out 90° from the stowed (flush) position. Their deployed normal is
+ * radial (the belly-first flow sees the plate broadside); a commanded deflection ±maxDeflection
+ * rotates that normal about the circumferential hinge line, adding an axial (drag) component.
+ *
+ * `wakeFactor` is the base-flow/wake shadow factor applied to the local dynamic pressure. It is a
+ * single conservative number (0.3 = fully shadowed lee surface, 1.0 = no shadowing); it is not
+ * azimuth-resolved. `thermalThickness` is the exposed titanium skin lumped in the thermal node,
+ * not the full grid envelope.
+ */
+export interface AftFlapDesign {
+  readonly enabled: boolean
+  readonly count: number // 3
+  readonly xHinge: number // m, body station of the flap hinge (x = 0 at the aft skirt plane)
+  readonly hingeRadius: number // m, hinge line radius from the body axis
+  readonly span: number // m, radial extension when deployed
+  readonly chord: number // m, chord along the body axis
+  readonly thickness: number // m, grid-fin envelope thickness (for mass)
+  readonly solidity: number // 0..1, titanium volume fraction of the envelope
+  readonly deploymentAngle: number // rad, fold-out angle about the hinge (π/2 = fully out)
+  readonly maxDeflection: number // rad, ± deflection about the deployed neutral
+  readonly deployTime: number // s, stowed → fully deployed
+  readonly deflectionRate: number // rad/s, actuator slew limit
+  readonly wakeFactor: number // 0.3–1.0, base/wake shadow factor on dynamic pressure
+  readonly material: "Ti-6Al-4V"
+  readonly density: number // kg/m³
+  readonly hingeActuatorMass: number // kg per flap, hinge + actuator + fittings
+  readonly thermalThickness: number // m, exposed skin lumped in the thermal node
+  readonly plumeDistance: number // m, effective distance from the plume source to the flap
+  readonly baseHeatFraction: number // fraction of stagnation flux seen by the aft base
+}
+
+/** Ti-6Al-4V density (AMS 4911 / mill anneal), kg/m³. */
+export const TITANIUM_6AL4V_DENSITY = 4430
+
+/**
+ * Baseline aft-flap option. `enabled: false` is the flown ship: the mass model, aero model and
+ * thermal model add nothing. Enable it with `{ ...DEFAULT_AFT_FLAPS, enabled: true }`.
+ */
+export const DEFAULT_AFT_FLAPS: AftFlapDesign = {
+  enabled: false,
+  count: 3,
+  xHinge: 4.6,
+  hingeRadius: 4.55,
+  span: 1.4,
+  chord: 1.0,
+  thickness: 0.12,
+  solidity: 0.18,
+  deploymentAngle: Math.PI / 2,
+  maxDeflection: (30 * Math.PI) / 180,
+  deployTime: 1.5,
+  deflectionRate: (30 * Math.PI) / 180,
+  wakeFactor: 0.5,
+  material: "Ti-6Al-4V",
+  density: TITANIUM_6AL4V_DENSITY,
+  hingeActuatorMass: 35,
+  thermalThickness: 0.006,
+  plumeDistance: 3.5,
+  baseHeatFraction: 0.02,
+}
+
+/** Runtime geometry/mass of the installed aft flap set (one source for aero + mass + thermal). */
+export interface AftFlapSet {
+  readonly design: AftFlapDesign
+  readonly count: number
+  readonly area: number // m² per flap (span × chord)
+  readonly totalArea: number // m², all flaps
+  readonly mass: number // kg per flap (titanium + hinge/actuator)
+  readonly totalMass: number // kg
+  readonly materialMass: number // kg per flap of titanium
+  readonly xHinge: number
+  readonly xCentroid: number // m, flap centroid station
+  readonly hingeRadius: number
+  readonly rCentroid: number // m, flap centroid radius
+  readonly span: number
+  readonly chord: number
+  readonly thickness: number
+  readonly thermalThickness: number
+  readonly deploymentAngle: number
+  readonly maxDeflection: number
+  readonly deployTime: number
+  readonly deflectionRate: number
+  readonly wakeFactor: number
+  readonly plumeDistance: number
+  readonly baseHeatFraction: number
+  readonly azimuths: readonly number[] // rad, measured in the body y-z plane from +y
+}
+
+const clampUnit = (x: number): number => Math.min(1, Math.max(0, x))
+
+export const makeAftFlapSet = (d: AftFlapDesign): AftFlapSet => {
+  const count = Math.max(1, Math.round(d.count))
+  const span = Math.max(0, d.span)
+  const chord = Math.max(0, d.chord)
+  const thickness = Math.max(0, d.thickness)
+  const area = span * chord
+  const materialMass = area * thickness * clampUnit(d.solidity) * Math.max(0, d.density)
+  const mass = materialMass + Math.max(0, d.hingeActuatorMass)
+  return {
+    design: d,
+    count,
+    area,
+    totalArea: count * area,
+    mass,
+    totalMass: count * mass,
+    materialMass,
+    xHinge: d.xHinge,
+    xCentroid: d.xHinge - 0.5 * chord,
+    hingeRadius: d.hingeRadius,
+    rCentroid: d.hingeRadius + 0.5 * span,
+    span,
+    chord,
+    thickness,
+    thermalThickness: d.thermalThickness,
+    deploymentAngle: d.deploymentAngle,
+    maxDeflection: Math.max(0, d.maxDeflection),
+    deployTime: Math.max(0.05, d.deployTime),
+    deflectionRate: Math.max(0.01, d.deflectionRate),
+    wakeFactor: clampUnit(d.wakeFactor),
+    plumeDistance: d.plumeDistance,
+    baseHeatFraction: Math.max(0, d.baseHeatFraction),
+    // evenly spaced; the first flap faces the belly (-z) for a positive-α belly-first flow
+    azimuths: Array.from({ length: count }, (_, k) => -Math.PI / 2 + (2 * Math.PI * k) / count),
+  }
 }
 
 export const DEFAULT_DESIGN: DesignParams = {
@@ -38,6 +172,8 @@ export const DEFAULT_DESIGN: DesignParams = {
   windScale: 1,
   turbulence: 1,
   seed: 42,
+  // optional deployable aft flaps: present in the design JSON, off on the flown baseline
+  aftFlaps: DEFAULT_AFT_FLAPS,
 }
 
 /** Inertia primitive for the mass model. */
@@ -137,6 +273,8 @@ export interface VehicleConfig {
   readonly rcsIsp: number
   readonly coil: CoilDesign
   readonly pica: PicaDesign
+  /** installed optional aft flap set; null on the flown baseline */
+  readonly aftFlaps: AftFlapSet | null
   readonly steelThickness: number
   readonly pinX: number // catch pin body x
   readonly pinOut: number // pin tip radius (from axis)
@@ -247,6 +385,7 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
   const shape = makeShape({ length: LENGTH, radius: R_HULL, noseLength: NOSE_LEN, noseRadius: d.noseRadius })
   const coil = designCoil(d, LENGTH)
   const pica = designPica(d, shape)
+  const aftFlaps = d.aftFlaps?.enabled ? makeAftFlapSet(d.aftFlaps) : null
   const steelT = 0.00397
   const noseSkin = wettedArea(shape, shape.Lc, LENGTH) * steelT * 7900
   const xLoxHeader = 46.6
@@ -282,6 +421,16 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     { id: "seed", label: "Caesium seed tank + injectors (dry; 400 kg Cs in consumables)", mass: coil.massSeed, x: 50.2, body: { kind: "solid", r: 0.4, l: 0.5 }, group: "mhd" },
     { id: "rcsDry", label: `Cold-gas RCS: N2 COPVs (${(d.n2Mass / 1000).toFixed(1)} t gas at 300 bar), 12 thrusters`, mass: 400 + 0.6 * d.n2Mass, x: 32.5, body: { kind: "shell", r: 3.8, l: 2 }, group: "rcs" },
   ]
+  if (aftFlaps) {
+    components.push({
+      id: "aftFlaps",
+      label: `${aftFlaps.count} × deployable aft ${aftFlaps.design.material} grid flaps (${aftFlaps.area.toFixed(2)} m² each, ${aftFlaps.mass.toFixed(0)} kg each)`,
+      mass: aftFlaps.totalMass,
+      x: aftFlaps.xCentroid,
+      body: { kind: "ring", r: aftFlaps.rCentroid },
+      group: "structure",
+    })
+  }
   const thrusters: Thruster[] = []
   const T = d.rcsThrust
   const xN = 44.6
@@ -303,6 +452,13 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
   const couples: Couple[] = [
     ["nose+z", "aft-z"], ["nose-z", "aft+z"], ["nose+y", "aft-y"], ["nose-y", "aft+y"], ["roll+a", "roll+b"], ["roll-a", "roll-b"],
   ].map(([a, b]) => ({ a: ix(a), b: ix(b) }))
+  // Raptor 3 SL flight specification (Starship V3): 250 tf = 2.4517 MN at sea level, 1,525 kg,
+  // 1.30 m exit (A_e = 1.327 m²). Source: SpaceX "Introducing Starship V3", 2026-05-12, as flown
+  // on Flight 12 (2026-05-22); the 2.75–2.8 MN (280 tf) numbers are the 2024 Raptor 3 *target*,
+  // not the flight engine. The model keeps the rounded 2.45 MN (−0.07 %). Isp 350 s SL is an
+  // assumption (Raptor 3 Isp is unpublished); with A_e = 1.33 m² it gives F_vac = 2.585 MN and
+  // Isp_vac = 369 s. 40–100 % throttle, ±15° gimbal at 20°/s and 2.5 s spool are assumptions.
+  // RVac is 275 tf vacuum (2.697 MN), but it is not fired on the return; its SL entries stay zero.
   const engines: Engine[] = []
   for (let k = 0; k < 3; k++) {
     const a = (k * 2 * Math.PI) / 3 + Math.PI / 2
@@ -319,7 +475,7 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     })
   }
   return {
-    design: d, shape, components, engines, thrusters, couples, rcsIsp: 73, coil, pica, steelThickness: steelT,
+    design: d, shape, components, engines, thrusters, couples, rcsIsp: 73, coil, pica, aftFlaps, steelThickness: steelT,
     // pins at the nosecone base (chopstick lift points), research/05
     pinX: N_RINGS * RING_H + 1.2, pinOut: R_HULL + 0.8, xLoxHeader, xCh4Header, xLoxMain: 5.2, xCh4Main: 22.3, xN2: 32.5, mixtureRatio: 3.6,
   }

@@ -82,9 +82,22 @@ const TIP_N = TOWER.pos.y - 2 - TOWER.armLength
 const ACT_N = ROOT_N + 0.7
 /**
  * Chopstick truss beyond [T]: depth = armDepth (2.8 m) over the catch zone (n ≤ 6 m), haunched to
- * 4.6 m at the root; chords set back from the inner face (the bumpers form the inner face) [E].
+ * 4.6 m at the root and tapered to 2.0 m at the tip. The cross-section is a **V**: two top chords
+ * under the rail and one lower spine, with V webs and Warren diagonals in the two inclined planes.
+ * The old visual was a four-chord rectangular box; it read as a box girder rather than Mechazilla.
  */
-const ARM = { rootDepth: 4.6, haunchN: 6, oIn: 0.32, oOut: TOWER.armWidth - 0.3, panels: 11 } as const
+const ARM = {
+  rootDepth: 4.6,
+  haunchN: 6,
+  /** depth taper begins here and reaches tipDepth at TIP_N */
+  tipN: -7,
+  tipDepth: 2.0,
+  /** top chord centres inside the 1.6 m rail width; the inner face itself is the bumper line at o = 0 */
+  topIn: 0.24,
+  topOut: TOWER.armWidth - 0.3,
+  tipOut: TOWER.armWidth - 0.62,
+  panels: 13,
+} as const
 /**
  * Arm actuators [W: linear hydraulic actuator]: crossed cylinders (the east arm's above the upper beam,
  * the west arm's below the lower beam) so that the closed length (8.4 m) ≥ the barrel (8.2 m) and
@@ -712,61 +725,98 @@ const carriage = (): Member[] => {
   return out
 }
 
-/** bottom of the arm truss at station n: armDepth over the catch zone, haunched toward the root */
-const armBottom = (n: number): number =>
-  TOWER.armHeight - (n <= ARM.haunchN ? TOWER.armDepth : TOWER.armDepth + ((n - ARM.haunchN) / (ROOT_N - ARM.haunchN)) * (ARM.rootDepth - TOWER.armDepth))
+/** bottom of the arm truss at station n: armDepth over the catch zone, haunched to the root, tapered to the tip */
+const armBottom = (n: number): number => {
+  const haunch = n > ARM.haunchN ? ((n - ARM.haunchN) / (ROOT_N - ARM.haunchN)) * (ARM.rootDepth - TOWER.armDepth) : 0
+  const taper = n < ARM.tipN ? ((ARM.tipN - n) / (ARM.tipN - TIP_N)) * (TOWER.armDepth - ARM.tipDepth) : 0
+  return TOWER.armHeight - TOWER.armDepth - haunch + taper
+}
+
+/** outer top chord offset at station n (narrows over the last 10 m toward the tip) */
+const armOut = (n: number): number =>
+  n < ARM.tipN ? ARM.topOut - ((ARM.tipN - n) / (ARM.tipN - TIP_N)) * (ARM.topOut - ARM.tipOut) : ARM.topOut
 
 /**
  * One chopstick (s = −1 west, +1 east) in its group frame (group x = inner face, e = s·o with o the
  * outward offset). Top of the rail = TOWER.armHeight, inner face (bumpers) at o = 0, width
  * TOWER.armWidth, depth TOWER.armDepth over the catch zone, tip at the contact model's yMin [T].
- * Rectangular Warren truss (4 chords, posts, diagonals, bottom laterals) [E], track on top [W],
- * yellow/black bumper pads on the inner top edge, root box and trolley on the traverse beams.
+ *
+ * The truss cross-section is a V: two top chords under the track and one lower spine, joined by V
+ * webs at every panel point and Warren diagonals in the two inclined side planes. It haunches to
+ * 4.6 m at the carriage, tapers to 2.0 m at the tip, carries yellow/black bumper pads on the inner
+ * top edge, the top track, and a chrome hydraulic link to the animated actuator rod. The old
+ * four-chord rectangular box (which read as a box girder) is gone; the inner face and rail top are
+ * unchanged so the contact model still sees exactly the same envelope.
  */
 const armMembers = (s: 1 | -1): Member[] => {
   const out: Member[] = []
   const top = TOWER.armHeight, W = TOWER.armWidth
+  const uT = top - 0.65
   const at = (o: number, n: number, u: number): V => enu(s * o, n, u)
   const ab = (mat: MatKey, o0: number, o1: number, n0: number, n1: number, u0: number, u1: number): Member => block(mat, s * o0, s * o1, n0, n1, u0, u1)
-  // trolley with shoes on the traverse beams, actuator lug
-  out.push(ab("towerDark", -0.8, W + 0.8, ROOT_N, ROOT_N + 1.4, top - 6.2, top + 2.4))
-  out.push(ab("towerDark", -0.6, W + 0.6, ROOT_N + 1.4, BEAM_N + 0.2, BEAM_U[0] + 0.65, top + 2.4))
-  out.push(ab("towerDark", -0.6, W + 0.6, ROOT_N + 1.4, BEAM_N + 0.2, top - 6.2, BEAM_U[1] - 0.65))
+  // trolley with shoes on the traverse beams, actuator clevis and the chrome link to the rod end
+  out.push(ab("towerDark", -0.55, W + 0.55, ROOT_N, ROOT_N + 1.4, top - 6.2, top + 2.4))
+  out.push(ab("towerDark", -0.4, W + 0.4, ROOT_N + 1.4, BEAM_N + 0.2, BEAM_U[0] + 0.65, top + 2.4))
+  out.push(ab("towerDark", -0.4, W + 0.4, ROOT_N + 1.4, BEAM_N + 0.2, top - 6.2, BEAM_U[1] - 0.65))
   out.push(s > 0 ? ab("towerDark", 0.55, 1.05, ACT_N - 0.35, ACT_N + 0.35, top + 2.4, ACT.uE + 0.5) : ab("towerDark", 0.55, 1.05, ACT_N - 0.35, ACT_N + 0.35, ACT.uW - 0.5, top - 6.2))
-  // root box (plated) and haunch
-  const n0 = ROOT_N - 3, nEnd = TIP_N + 0.5, uT = top - 0.65
-  out.push(ab("arm", 0.05, W + 0.1, n0, ROOT_N, top - ARM.rootDepth, top - 0.45))
-  // chords
-  for (const o of [ARM.oIn, ARM.oOut]) {
-    out.push(bar("arm", at(o, n0, uT), at(o, TIP_N + 0.25, uT), 0.4))
-    out.push(bar("arm", at(o, n0, armBottom(n0) + 0.2), at(o, ARM.haunchN, armBottom(ARM.haunchN) + 0.2), 0.4))
-    out.push(bar("arm", at(o, ARM.haunchN, armBottom(ARM.haunchN) + 0.2), at(o, TIP_N + 0.25, armBottom(TIP_N) + 0.2), 0.4))
-  }
-  // panel points: posts, diagonals (Warren), bottom laterals and struts, top struts
+  const actU = s > 0 ? ACT.uE : ACT.uW
+  out.push(ball("chrome", at(0.8, ACT_N, actU), 0.52))
+  out.push(tube("chrome", at(0.8, ACT_N, actU), at(ARM.topIn + 0.2, ROOT_N, uT), 0.2))
+  // ---- V truss
+  const n0 = ROOT_N - 3, nEnd = TIP_N + 0.5
+  const bot = (n: number): number => armBottom(n) + 0.2
+  const mid = (n: number): number => (ARM.topIn + armOut(n)) / 2
+  // top chords under the track (the outer chord angles in over the tip taper)
+  out.push(bar("arm", at(ARM.topIn, n0, uT), at(ARM.topIn, TIP_N, uT), 0.38))
+  out.push(bar("arm", at(ARM.topOut, n0, uT), at(ARM.topOut, ARM.tipN, uT), 0.38))
+  out.push(bar("arm", at(ARM.topOut, ARM.tipN, uT), at(ARM.tipOut, TIP_N, uT), 0.38))
+  // lower spine: follows the root haunch and the tip taper
+  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(mid(ARM.haunchN), ARM.haunchN, bot(ARM.haunchN)), 0.42))
+  out.push(bar("arm", at(mid(ARM.haunchN), ARM.haunchN, bot(ARM.haunchN)), at(mid(ARM.tipN), ARM.tipN, bot(ARM.tipN)), 0.42))
+  out.push(bar("arm", at(mid(ARM.tipN), ARM.tipN, bot(ARM.tipN)), at(mid(TIP_N), TIP_N, bot(TIP_N)), 0.42))
+  // panel frames: a V from both top chords to the spine, a top strut, one alternating diagonal per
+  // inclined plane (Warren), and the V frame at the root itself
   const dn = (n0 - nEnd) / ARM.panels
   const pn = (i: number): number => n0 - i * dn
-  const bot = (n: number): number => armBottom(n) + 0.2
   for (let i = 0; i <= ARM.panels; i++) {
-    const n = pn(i)
-    for (const o of [ARM.oIn, ARM.oOut]) out.push(bar("arm", at(o, n, bot(n) + 0.2), at(o, n, uT - 0.2), 0.3))
-    out.push(bar("arm", at(ARM.oIn, n, bot(n)), at(ARM.oOut, n, bot(n)), 0.24), bar("arm", at(ARM.oIn, n, uT), at(ARM.oOut, n, uT), 0.3))
+    const n = pn(i), oo = armOut(n), om = mid(n)
+    out.push(bar("arm", at(ARM.topIn, n, uT), at(om, n, bot(n)), 0.24))
+    out.push(bar("arm", at(oo, n, uT), at(om, n, bot(n)), 0.24))
+    out.push(bar("arm", at(ARM.topIn, n, uT), at(oo, n, uT), 0.16))
     if (i === ARM.panels) continue
-    const m = pn(i + 1)
-    for (const o of [ARM.oIn, ARM.oOut]) out.push(i % 2 === 0 ? bar("arm", at(o, n, uT), at(o, m, bot(m)), 0.26) : bar("arm", at(o, n, bot(n)), at(o, m, uT), 0.26))
-    out.push(bar("arm", at(ARM.oIn, n, bot(n)), at(ARM.oOut, m, bot(m)), 0.18))
+    const m = pn(i + 1), mo = armOut(m), mm = mid(m)
+    out.push(i % 2 === 0 ? bar("arm", at(ARM.topIn, n, uT), at(mm, m, bot(m)), 0.2) : bar("arm", at(om, n, bot(n)), at(ARM.topIn, m, uT), 0.2))
+    out.push(i % 2 === 0 ? bar("arm", at(oo, n, uT), at(mm, m, bot(m)), 0.2) : bar("arm", at(om, n, bot(n)), at(mo, m, uT), 0.2))
   }
-  // track on top (top surface = TOWER.armHeight) with joint plates
-  out.push(ab("rail", 0.1, W - 0.1, TIP_N + 0.15, ROOT_N, top - 0.45, top))
-  for (let n = ROOT_N - 2.4; n > TIP_N + 1; n -= 4.68) out.push(ab("towerDark", 0.06, W - 0.06, n - 0.08, n + 0.08, top - 0.5, top - 0.02))
-  // bumper pads on the inner top edge over the catch zone (inner face = o 0 exactly)
+  // root haunch: V frames and diagonal gussets (an open truss, not a solid rectangular root box)
+  const rootMid = mid(ROOT_N)
+  out.push(bar("arm", at(ARM.topIn, ROOT_N, uT), at(rootMid, ROOT_N, bot(ROOT_N)), 0.24))
+  out.push(bar("arm", at(ARM.topOut, ROOT_N, uT), at(rootMid, ROOT_N, bot(ROOT_N)), 0.24))
+  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(ARM.topIn, ROOT_N, uT), 0.3))
+  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(ARM.topOut, ROOT_N, uT), 0.3))
+  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(rootMid, ROOT_N, bot(ROOT_N)), 0.28))
+  out.push(bar("arm", at(ARM.topIn, n0, uT), at(ARM.topIn, ROOT_N, uT), 0.38))
+  out.push(bar("arm", at(ARM.topOut, n0, uT), at(ARM.topOut, ROOT_N, uT), 0.38))
+  // track on top (top surface = TOWER.armHeight): a narrow rail beam over the inner catch chord,
+  // not a full-width slab, so the outer top chord and the V below stay visible
+  out.push(ab("rail", 0.1, 0.98, TIP_N + 0.15, ROOT_N, top - 0.32, top))
+  for (let n = ROOT_N - 2.4; n > TIP_N + 1; n -= 4.68) out.push(ab("towerDark", 0.1, 0.98, n - 0.08, n + 0.08, top - 0.36, top - 0.02))
+  // inner bumper/rub faces over the catch zone (the pads define the inner face at o = 0 exactly)
   for (let k = 0; k < 9; k++) {
     const nc = 7 - k * 2.4
     out.push(ab("yellow", 0, 0.16, nc - 0.85, nc + 0.85, top - 1.35, top - 0.1))
   }
-  // tip: end plate, chevron marker, conduit along the outer side
-  out.push(ab("arm", 0.1, W - 0.05, TIP_N, TIP_N + 0.5, armBottom(TIP_N), top - 0.45))
-  out.push(ab("yellow", 0.2, W - 0.2, TIP_N - 0.04, TIP_N + 0.02, armBottom(TIP_N) + 0.35, top - 0.8))
-  out.push(tube("cable", at(W - 0.05, n0, top - 1.4), at(W - 0.05, TIP_N + 1, top - 1.4), 0.14))
+  out.push(ab("rail", 0.02, 0.1, TIP_N + 1.2, ARM.haunchN + 1.5, top - 1.32, top - 1.16))
+  // open V tip frame: the two top chords, the spine node and two V legs (no full-depth end plate that
+  // would hide the cross-section end-on); small rail end cap + chevron at the contact tip
+  out.push(bar("arm", at(ARM.topIn, TIP_N + 0.05, uT), at(mid(TIP_N), TIP_N + 0.05, bot(TIP_N)), 0.24))
+  out.push(bar("arm", at(armOut(TIP_N), TIP_N + 0.05, uT), at(mid(TIP_N), TIP_N + 0.05, bot(TIP_N)), 0.24))
+  out.push(bar("arm", at(ARM.topIn, TIP_N + 0.05, uT), at(armOut(TIP_N), TIP_N + 0.05, uT), 0.18))
+  out.push(ab("rail", 0.1, 0.98, TIP_N, TIP_N + 0.12, top - 0.32, top))
+  // chevron marker on the V tip frame below the rail (visible end-on and from the side)
+  out.push(ab("yellow", 0.16, 0.92, TIP_N, TIP_N + 0.04, top - 0.5, top - 0.36))
+  out.push(tube("cable", at(ARM.topOut + 0.04, n0, top - 1.4), at(ARM.topOut + 0.04, ARM.tipN, top - 1.4), 0.14))
+  out.push(tube("cable", at(ARM.topOut + 0.04, ARM.tipN, top - 1.4), at(armOut(TIP_N) + 0.04, TIP_N + 1, top - 1.4), 0.14))
   return out
 }
 

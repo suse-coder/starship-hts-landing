@@ -1,7 +1,8 @@
 import { type Q, type V3, qLookX, normalize, scale, ZERO } from "@ship/math"
 import { type Consumables, engineOff, type EngineState, initialConsumables } from "@ship/craft"
 import { initCoil, type CoilState, type MhdBasis, type MhdOut, ZERO_MHD } from "@ship/mhd"
-import { initThermal, type ThermalState } from "@ship/heat"
+import { initThermal, initAftFlapThermal, type AftFlapThermalState, type ThermalState } from "@ship/heat"
+import { type AftFlapCommand, type AftFlapState, stowedAftFlapCommand, stowedAftFlapState } from "@ship/aero"
 import { armsInit, type ArmState } from "@ship/tower"
 import { turbInit, type TurbState } from "@ship/earth"
 import { initMem, type Mem } from "@ship/gnc"
@@ -22,6 +23,12 @@ export interface SimState {
   readonly qStag: number // last computed stagnation heat flux (thermal sub-steps), W/m²
   readonly arms: ArmState
   readonly turb: TurbState
+  /** deployable aft flap actuator state (stowed on the flown baseline) */
+  readonly flaps: AftFlapState
+  /** command consumed by the next step; guidance/MPC sets this, default stowed */
+  readonly flapCmd: AftFlapCommand
+  /** lumped titanium flap temperature; null when the vehicle has no aft flap set */
+  readonly flapTh: AftFlapThermalState | null
   readonly mem: Mem
   readonly mhdBasis: MhdBasis | null
   readonly mhdT: number
@@ -64,6 +71,9 @@ export const initState = (w: World): SimState => {
     qStag: 0,
     arms: armsInit,
     turb: turbInit,
+    flaps: stowedAftFlapState(w.vehicle.aftFlaps?.count ?? 3),
+    flapCmd: stowedAftFlapCommand(w.vehicle.aftFlaps?.count ?? 3),
+    flapTh: w.vehicle.aftFlaps ? initAftFlapThermal(285) : null,
     mem: initMem(p.bankEntry0),
     mhdBasis: null, mhdT: -1, mhdU: Array(8).fill(0), mhdOut: ZERO_MHD,
     rcsDuty: w.vehicle.thrusters.map(() => 0),

@@ -1,8 +1,10 @@
 /**
- * T09 landing (R11c, Q29/Q33): the flip-to-pin hoverslam on the sea-level Raptors alone.
+ * T09 landing (Q29/Q33, updated for the staged burn): the flip-to-pin hoverslam on the sea-level
+ * Raptors.
  *
- *  - `guide` must fly `flip`/`landing`/`terminal` with `useRcs === false` and at least two SL Raptors
- *    lit (no cold gas after the flip, differential gimbal for roll);
+ *  - `guide` flies `flip` on two SL Raptors; `landing`/`terminal` are staged 1–3 engines. Cold gas is
+ *    roll-only: `useRcs` may be true only together with `rcsRollOnly === true` (no translation, no
+ *    pitch/yaw RCS); 2/3-engine phases use differential gimbal for roll;
  *  - the analytic hoverslam schedule must reach the pin plane at the contact speed;
  *  - the terminal law must respect the engine band (40 % floor, 100 % ceiling) and the tilt cone, and
  *    must not stall: with the realised throttle lag it arrives within 1 m and ≈1 m/s of the target;
@@ -161,7 +163,7 @@ describe("landing gate", () => {
   })
 })
 
-describe("guidance: engines-only flip, landing and terminal (R11c)", () => {
+describe("guidance: staged landing and roll-only RCS", () => {
   const world = makeWorld(DEFAULT_DESIGN)
   const mass = massProps(world.vehicle, initialConsumables(world.vehicle)).m
   const q: Q = { w: 1, x: 0, y: 0, z: 0 } // body +x = ECI +x
@@ -170,7 +172,7 @@ describe("guidance: engines-only flip, landing and terminal (R11c)", () => {
     alt: 1200, up: v3(0, 0, 1), east: v3(1, 0, 0), north: v3(0, 1, 0), vAir: v3(0, 0, -70), V: 70, mach: 0.2,
     qbar: 3000, pAmb: P_AMB, alpha: 0.1, t0Stag: 0, padEci: v3(0, 0, 0), pinRel: v3(900, 200, 1100),
     velRel: v3(-30, -5, -70), hBase: 1100, hLow: 1000, mhd: null, aeroM: v3(0, 0, 0), coilI: 10, coilIop: 3000,
-    seedLeft: 0, propHeader: 20_000, thrusts: [1e6, 1e6, 0], spoolDone: true, pinLoad: 0, accThrust: 15,
+    seedLeft: 0, propHeader: 20_000, thrusts: [1e6, 1e6, 0], spoolDone: true, pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust: 15,
     mhdDrag: 0,
   })
   const memFor = (phase: "flip" | "landing" | "terminal"): Mem => ({
@@ -178,23 +180,30 @@ describe("guidance: engines-only flip, landing and terminal (R11c)", () => {
   })
   const slOn = (cmd: { engines: readonly { on: boolean }[] }): number => cmd.engines.filter((e) => e.on).length
 
-  test("flip: no cold gas, at least two SL Raptors lit", () => {
+  test("flip: two SL Raptors, no cold gas", () => {
     const out = guide(world.guide, nav(500), memFor("flip"), 0.01)
     expect(out.cmd.useRcs).toBe(false)
+    expect(out.cmd.rcsRollOnly).toBe(false)
     expect(slOn(out.cmd)).toBeGreaterThanOrEqual(2)
     expect(out.cmd.coil).toBe("discharge")
   })
 
-  test("landing: no cold gas, at least two SL Raptors lit", () => {
+  test("landing: 1–3 staged SL Raptors; cold gas is roll-only, never translational", () => {
     const out = guide(world.guide, nav(500), memFor("landing"), 0.01)
-    expect(out.cmd.useRcs).toBe(false)
-    expect(slOn(out.cmd)).toBeGreaterThanOrEqual(2)
+    // one engine in the falling/steering stage, two/three only when the decel/attitude needs them
+    expect(slOn(out.cmd)).toBeGreaterThanOrEqual(1)
+    expect(slOn(out.cmd)).toBeLessThanOrEqual(3)
+    // RCS may be enabled only for roll; pitch/yaw stay on the gimbal and there is no translation
+    if (out.cmd.useRcs) expect(out.cmd.rcsRollOnly).toBe(true)
+    else expect(out.cmd.rcsRollOnly).toBe(false)
   })
 
-  test("terminal: no cold gas, at least two SL Raptors lit", () => {
+  test("terminal: 1–3 staged SL Raptors; cold gas is roll-only if enabled", () => {
     const out = guide(world.guide, nav(500), memFor("terminal"), 0.004)
-    expect(out.cmd.useRcs).toBe(false)
-    expect(slOn(out.cmd)).toBeGreaterThanOrEqual(2)
+    expect(slOn(out.cmd)).toBeGreaterThanOrEqual(1)
+    expect(slOn(out.cmd)).toBeLessThanOrEqual(3)
+    if (out.cmd.useRcs) expect(out.cmd.rcsRollOnly).toBe(true)
+    else expect(out.cmd.rcsRollOnly).toBe(false)
   })
 })
 

@@ -3,7 +3,7 @@
  * the PICA-X bondline hold, and how much does the HTS coil push the shock and the heat flux away?
  * Pure functions over the recording; DOM rendering is separate.
  */
-import { makeVehicle, TILE_MATERIAL_OPTIONS, type DesignParams } from "@ship/craft"
+import { makeVehicle, type DesignParams } from "@ship/craft"
 import { makeThermalGrid, steelVerdict, steelYieldRetention, THERMAL_LIMITS as TL } from "@ship/heat"
 import { CH, type ChannelKey, type Recording } from "@ship/sim"
 
@@ -111,9 +111,9 @@ export const renderSurvival = (s: Survival, onSeek: (t: number) => void): HTMLEl
     <div class="row"><span>margin to design / failure</span><span>${s.marginDesign.toFixed(0)} K / ${s.marginFail.toFixed(0)} K</span></div>
     <div class="row"><span>min. yield retention k</span><span>${(s.kMin * 100).toFixed(0)} % of RT yield</span></div>
     <div class="row"><span>time &gt; ${TL.steelReduced} K / &gt; ${TL.steelDesign} K</span><span>${s.secAboveReduced.toFixed(0)} s / ${s.secAboveDesign.toFixed(0)} s</span></div>
-    <div class="row"><span>tile-surface cells over ${TL.tileSurface} K</span><span>${s.cellsAboveLimit} / ${s.surfaceCells}</span></div>
+    <div class="row"><span>tile-surface cells over flight ${TL.tileSurface} K / NASA ${TL.tileSurfaceConservative} K</span><span>${s.cellsAboveLimit} / ${s.surfaceCells}</span></div>
     <div class="row"><span>PICA-X bondline peak</span><span>${s.bondPeak.toFixed(0)} K (limit ${TL.bondline}) ${pass(s.bondMargin > 0, s.bondMargin < 40)}</span></div>
-    <div class="row"><span>Silica tile surface peak</span><span>${s.tileSurfPeak.toFixed(0)} K (LI-900 ${TL.tileSurface} / sourced hex claim ${TILE_MATERIAL_OPTIONS.starshipHex.surfaceLimitK}) ${pass(s.tileSurfMargin > 0, s.tileSurfMargin < 100)}</span></div>
+    <div class="row"><span>Silica tile surface peak</span><span>${s.tileSurfPeak.toFixed(0)} K (flight tile ${TL.tileSurface} / NASA LI-900 ${TL.tileSurfaceConservative}) ${pass(s.tileSurfMargin > 0, s.tileSurfMargin < 100)}</span></div>
     <div class="row"><span>Tile backing (steel) peak</span><span>${s.tileBackPeak.toFixed(0)} K (adhesive ${TL.tileBond}, steel ${TL.steelDesign}) ${pass(s.tileBackMargin > 0, s.tileBackMargin < 50)}</span></div>
     <div class="row"><span>PICA-X recession</span><span>${(s.recession * 1000).toFixed(1)} of ${(s.picaCap * 1000).toFixed(0)} mm</span></div>
     <h4>Hottest tile-surface stations (the steel backing is the check above)</h4>

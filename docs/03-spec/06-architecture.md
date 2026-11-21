@@ -140,7 +140,9 @@ search) + `valueAt` (linear interpolation), O(log n) per frame.
 |---|---|
 | `bun run typecheck` (strict, noUnused*) | [x] clean 2026-11-21 |
 | `bun run test` (spec/05 matrix) | [x] 238 pass, 2 todo, 0 fail, 22 files |
-| `bun run dev` / `build` (Vite, relative base) | [x] dev · [ ] production build not verified |
+| `bun run dev` / `build` (Vite, relative base) | [x] dev · [x] production build verified 2026-11-21 |
+| `bash scripts/quick-check.sh` (tower/gnc/score + MPC bench, tier 0–1) | [x] fast edit gate; no full mission |
+| Modular test map and tiers | [x] [spec/12](12-testability.md) |
 | GitHub Actions → Pages (TS-10) | [ ] blocked by spec/11 release gate |
 | Headless check `.tmp/pw/shot.cjs` (Playwright-core + Chromium) | [x] |
 

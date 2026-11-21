@@ -93,8 +93,9 @@ The flown angle of attack is **10.1° at 50 km** and **25.6–32.8° through the
 the windward flank is inside the shock layer and is heated too. The coil/MHD force steers the shock
 layer (≈410–458 kN at 48–50 km in the log) but it is not a heat shield and does not remove the trim
 angle. A nose-only hot spot would require α ≈ 0, which removes the lift used for range and changes
-the whole entry. The 1650 K tile surface vs the 1530 K limit is the known Q30 design issue, not a
-sign of a wrong fall direction. The visual hot windward flank is physically correct.
+the whole entry. The 1650 K tile surface is over the conservative NASA LI-900 1530 K margin but
+**under the user-selected SpaceX 1673 K flight-tile claim by 23 K** (the 1684 K run is over by 11 K);
+that is the known Q30 design issue, not a wrong fall direction. The visual hot windward flank is physically correct.
 
 ### Still open
 The catch is still not achieved. The remaining blocker is the landing lateral controller: the
@@ -118,6 +119,11 @@ optimisation (not just a rollout) is the next step; the current `pdg.ts` is the 
 Still open: the two-phase lateral plan still commands a tilt reversal near the pad (11° → 48° at
 ~220 m) that the body cannot follow; the run remains lost. The next test is a lower assumed pointing
 lag (τ = 0.35/0.25 s instead of 1.4/0.7 s), which the trace suggests is 4× too large.
+
+### Active no-flap belly-first sequence (2026-11-21)
+- Flaps are **not used** in the flown path; the high-α belly-first regime at ~52.5 km / q 12 kPa is the active mode, coil until Q25 authority loss, belly drag to the 1.35 km flip gate, then staged engine landing.
+- Latest run: **5150 m** off (across 1369, along 4965), **68.3 m/s**, roll 60°, arms open; `lost`. Tile 1671 K (under the 1673 K SpaceX claim by 2 K), bondline **678 K > 560 K**, steel 285–363 K (safe); 112 kg roll-only N₂.
+- Missing: low-q one-engine flip run, post-flip 20–35° drag-attitude law, PD+FF tracker and exact allocation/a0 feedback. The current law is the two-phase vertical + lateral field; no catch claim.
 
 ### Closed-loop lateral field result (MPC worker, 2026-11-21)
 - `landing.ts` `LateralField`: per-axis `v_ref = −(p+vτ_lead)/τ_eff`, x-before-y budget, stopping-

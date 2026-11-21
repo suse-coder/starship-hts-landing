@@ -22,6 +22,7 @@ interface Fixture {
   readonly coldGasAfterFlip?: number
   readonly coilCurrent?: number
   readonly engines?: number
+  readonly rcsNonRoll?: number
   readonly neverCross?: boolean
 }
 
@@ -52,6 +53,7 @@ const make = (f: Fixture = {}): Recording => {
     set("header", 14000 - 300 * t)
     set("coilI", f.coilCurrent ?? 20); set("coilMode", 6)
     set("T1", t >= 4 ? 1.2e6 : 0); set("T2", t >= 4 ? 1.2e6 : 0); set("T3", 0)
+    if (f.rcsNonRoll) set("r0", f.rcsNonRoll)
     if ((f.engines ?? 2) === 3) set("T3", 1.2e6)
     set("bellyMiss", 650)
     rec.push(row, [290])
@@ -116,12 +118,16 @@ describe("score: continuous catch margin", () => {
     expect(s.constraints.find((c) => c.id === "contactSpeed")?.ok).toBe(false)
   })
 
-  test("three engines, cold gas after the flip and a live coil are mechanism failures", () => {
+  test("three engines and roll-only cold gas are allowed; a live coil or translational gas fails", () => {
     const s = score(make({ engines: 3, coldGasAfterFlip: 1, coilCurrent: 500 }))
     expect(s.catchFeasible).toBe(false)
-    expect(s.constraints.find((c) => c.id === "landingEngines")?.ok).toBe(false)
-    expect(s.constraints.find((c) => c.id === "noColdGasAfterFlip")?.ok).toBe(false)
+    expect(s.constraints.find((c) => c.id === "landingEngines")?.ok).toBe(true)
+    expect(s.constraints.find((c) => c.id === "coldGasAfterFlip")?.ok).toBe(true)
     expect(s.constraints.find((c) => c.id === "coilDischarge")?.ok).toBe(false)
+    // Translational cold gas (a nose/aft jet, not a roll couple) is still a mechanism failure.
+    const t = score(make({ engines: 1, coldGasAfterFlip: 2, rcsNonRoll: 0.5 }))
+    expect(t.constraints.find((c) => c.id === "coldGasAfterFlip")?.ok).toBe(false)
+    expect(t.terms.coldGasNonRoll).toBeGreaterThan(0.02)
   })
 
   test("a tile/bondline over-temperature is reported but does not hide a catch", () => {

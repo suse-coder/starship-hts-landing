@@ -15,7 +15,12 @@ T09 input. **T09 gate: NO-GO.**
 
 ## 2. P0 — blockers
 
-### P0-1 · R11c: the final approach runs on one Raptor, not ≥ 2
+### P0-1 · R11c: the final approach runs on one Raptor, not ≥ 2 (superseded 2026-11-21)
+
+**Update (user decision 2026-11-21):** the final approach may start on **one Raptor** for pitch/yaw
+gimbal, with **short roll-only cold-gas pulses** and staged 2/3 engines for the decel; translational
+cold gas remains forbidden. This supersedes the old “≥2 engines, zero cold gas” rule. The original
+finding is kept below for the record.
 
 `LANDING_ENGINES = 1` (`packages/gnc/src/guidance.ts:184`); the hand-over shuts two engines down
 (`:497-509`, event at `:544`). Mission: `two Raptors shut down, landing burn on RSL1` at T+2780.7.

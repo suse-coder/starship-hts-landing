@@ -11,6 +11,8 @@ Deploy publicly only when **all** of the following hold:
 
 1. **True catch** — both pins on the rails, ship axis within ±1 m of the tower centreline, contact
    ≤1 m/s, arms closed (`armsClose`), with wind. A single pin grazing an open rail is a false catch.
+   After the flip: 1 Raptor gimbal + short **roll-only** cold-gas pulses (≤25 kg N₂, no translational
+   RCS), staged to 2/3 engines; engines off instantly on catch.
 2. **TPS within limits** — tile surface ≤1530 K and bondline ≤560 K through the flown trajectory.
 3. **T-mc ≥18/20** — Monte Carlo caught within the envelope with wind, κ, B and mass ±5 %.
 4. **Explicit user approval** — the user has approved the public release after the two checks above.

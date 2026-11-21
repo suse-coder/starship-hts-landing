@@ -49,6 +49,8 @@ export const CHANNELS = [
   ["ve", "v East", "m/s"], ["vn", "v North", "m/s"], ["vu", "v Up", "m/s"],
   ["pinX", "pin offset E", "m"], ["pinY", "pin offset N", "m"], ["pinZ", "pins above rails", "m"],
   ["hBase", "aft end height", "m"], ["arms", "arms open", ""], ["pinLoad", "pin load", "N"],
+  ["pinLoadMin", "minimum per-pin load", "N"], ["pinCount", "loaded pins", ""],
+  ["bodyContact", "hull against tower structure", ""], ["hullBump", "swept hull impulse", ""],
   ["windE", "wind East", "m/s"], ["windN", "wind North", "m/s"],
   ["predDR", "predicted downrange miss", "m"], ["predCR", "predicted crossrange miss", "m"], ["npcMhd", "predictor MHD drag scale", ""], ["bellyHdg", "belly-flop glide heading", "rad"], ["bellyMiss", "belly-flop predicted miss", "m"],
 ] as const

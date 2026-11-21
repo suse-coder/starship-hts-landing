@@ -2,6 +2,8 @@
 export * from "./world"
 export * from "./state"
 export * from "./step"
+export type { AftFlapCommand, AftFlapState } from "@ship/aero"
+export type { AftFlapThermalState } from "@ship/heat"
 export * from "./recording"
 export * from "./run"
 export * from "./protocol"

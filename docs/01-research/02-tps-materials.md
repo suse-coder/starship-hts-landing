@@ -39,6 +39,24 @@ at α 10–14° it stays at 700–1000 K. In the passive high-α trim (α ≈ 51
 would sit at 1130–1470 K for V 3–5.5 km/s — hence the barbecue roll (each ray windward only
 part of a turn) and the thermal mass. **Simulated:** steel peak ≈ 920–1000 K.
 
+### Flight 15 tile cross-check (2026-11-21)
+
+The real Flight 15 vehicle's tiles survived reentry (user-provided observation). That is consistent
+with the public **SpaceX 1673 K** flight-tile claim and indicates the conservative NASA LI-900/HRSI
+1530 K limit is a design margin, not the flight tile's actual limit. Against the model's speed/heat
+profile:
+
+| run | tile surface | vs NASA 1530 K | vs SpaceX 1673 K |
+|---|---:|---:|---:|
+| best high-α | 1650 K | −120 K (fail) | **+23 K (pass)** |
+| 14:08 integrated | 1684 K | −154 K (fail) | −11 K (fail) |
+| zero-α unretargeted | 2417 K | far fail | far fail |
+
+Tile survival does **not** validate the PICA bondline: the current 695 K is above the RTV-560 560 K
+limit. The steel backing (301/30X) is 363 K and safe. Per user decision 2026-11-21 the release gate
+uses the **SpaceX 1673 K flight-tile claim**; the NASA 1530 K line is reported as a margin, not hidden.
+The best 1650 K run passes by 23 K; the 1684 K run fails by 11 K.
+
 ### Strength at temperature (2026-11-21, plan/01 TS-16)
 
 0.2 %-proof strength retention k = f_y(T)/f_y(20 °C) for austenitic stainless grade 1.4301 (304),

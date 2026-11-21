@@ -341,7 +341,7 @@ export const makeCoast = (shoreE = 950): Coast => {
     lastK = k
     // The planes are always transparent: the radial alpha fade is only visible above a few km, but
     // keeping the state stable avoids a shader recompile at the hand-off altitude.
-    for (const m of fadeMats) m.opacity = k
+    for (const m of fadeMats) { m.opacity = k; m.depthWrite = k > 0.001 }
     water.uniforms.uOpacity.value = k
     water.depthWrite = k > 0.999
   }

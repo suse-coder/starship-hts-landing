@@ -6,10 +6,12 @@ import {
 } from "@ship/earth"
 import { lookupStag, type StagState, cyclotronFreq, criticalDensity } from "@ship/gas"
 import { engineStep, engineThrust, massProps, rcsWrench, sumEngines, type EngineCmd, type EngineOut, type MassProps } from "@ship/craft"
-import { aeroWrench, type AeroOut } from "@ship/aero"
-import { surfaceHeating, thermalStep, thermalSummary, surfaceTemps } from "@ship/heat"
+import { aeroWrench, stepAftFlaps, type AeroOut, type AftFlapCommand } from "@ship/aero"
+import {
+  aftBaseHeatFlux, aftFlapThermalStep, plumeHeatFlux, surfaceHeating, thermalStep, thermalSummary, surfaceTemps,
+} from "@ship/heat"
 import { coilEnergy, coilNI, coilStep, dipoleTorque, mhdBasis, ZERO_MHD, type MhdOut } from "@ship/mhd"
-import { armStep, TOWER, towerContact } from "@ship/tower"
+import { armStep, TOWER, towerContact, resolveHullImpact } from "@ship/tower"
 import { allocateGimbals, allocateMhd, allocateRcs, guide, phaseIndex, type Nav, torqueCommand, U_BASE } from "@ship/gnc"
 import { CH, N_CH } from "./recording"
 import type { SimState } from "./state"
@@ -55,7 +57,12 @@ export interface StepOut {
 
 const RN_COMMS = 12e9 // Hz, Ku-band Starlink downlink
 
-export const step = (W: World, s: SimState): StepOut => {
+/**
+ * Advance one integration/control step. `cmdFlaps` is the guidance/MPC interface: it deploys the
+ * optional aft flap set and commands one deflection per flap. Omit it to hold `s.flapCmd` (stowed
+ * on the flown baseline), which keeps the existing mission loop and baseline physics unchanged.
+ */
+export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd): StepOut => {
   const veh = W.vehicle
   const theta = W.plan.theta0 + OMEGA_EARTH * s.t
   const ecef = rotZ(s.r, -theta)
@@ -99,9 +106,11 @@ export const step = (W: World, s: SimState): StepOut => {
   const hLow = Math.min(hBase, hNoseTip) - veh.shape.p.radius * Math.sqrt(Math.max(0, 1 - axisUp * axisUp))
   // ---------- aerodynamics (held over the step) ----------
   const enginesFiring = s.eng.some((e) => e.spool > 0.3)
+  const flaps = stepAftFlaps(veh.aftFlaps, s.flaps, cmdFlaps, dt)
   const aero: AeroOut = aeroWrench(W.aero, {
     vAir: vAirB, w: s.w, rho: atm.rho, a: atm.a, mu: atm.mu, xcg: mp.xcg,
     cpMax: stag ? stag.cpMax : 1.84, enginesOn: enginesFiring, knudsen: (atm.mu / Math.max(atm.p, 1e-12)) * Math.sqrt((Math.PI * 287 * atm.T) / 2) / 9,
+    flaps,
   })
   // ---------- MHD basis (10 Hz) ----------
   const NI = coilNI(veh.coil, s.coil)
@@ -121,7 +130,7 @@ export const step = (W: World, s: SimState): StepOut => {
     vAir, V, mach, qbar, pAmb: atm.p, alpha, t0Stag: stag ? stag.T0 : 0, padEci,
     pinRel, velRel: velPad, hBase, hLow, mhd: basis, aeroM: aero.M, coilI: s.coil.I, coilIop: veh.coil.Iop,
     seedLeft: s.cons.seed, propHeader: s.cons.loxHeader + s.cons.ch4Header,
-    thrusts, spoolDone: s.eng.slice(0, 3).filter((e) => e.on).every((e) => e.spool >= 1), pinLoad: 0, accThrust,
+    thrusts, spoolDone: s.eng.slice(0, 3).filter((e) => e.on).every((e) => e.spool >= 1), pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust,
     mhdDrag: s.mhdOut.forceMag > 0 ? -dot(s.mhdOut.F, vhatB) : 0,
   }
   // pin load from the previous contact solution is approximated by evaluating contact now
@@ -130,7 +139,12 @@ export const step = (W: World, s: SimState): StepOut => {
     return { p, v: velPad }
   })
   const cNow = hBase < 300 ? towerContact(s.arms, relPad, pinsNow, []) : null
-  const g = guide(W.guide, { ...nav, pinLoad: cNow ? cNow.pinLoad : 0 }, s.mem, dt)
+  const g = guide(W.guide, {
+    ...nav,
+    pinLoad: cNow ? cNow.pinLoad : 0,
+    pinLoadMin: cNow ? cNow.pinLoadMin : 0,
+    pinCount: cNow ? cNow.pinCount : 0,
+  }, s.mem, dt)
   const cmd = g.cmd
   // ---------- control & allocation ----------
   // R6 (T08 P0-2): feed the guidance's own table moment, not the plant's exact `aero.M`.
@@ -178,24 +192,39 @@ export const step = (W: World, s: SimState): StepOut => {
   // Tower/arm collision must not depend on the guidance phase: a misaligned or lost ship still hits
   // Mechazilla instead of passing through it.
   const contactOn = hBase < 260 && Math.hypot(relPad.x, relPad.y) < 300
-  const hullX = Array.from({ length: 20 }, (_, i) => veh.pinX - 6 + i * 1.0)
+  // Sample the whole hull, aft to nose. The old window only covered the nose section, so a
+  // misaligned ship could drive its lower half through the tower column and carriage unchecked.
+  const hullX = Array.from({ length: Math.ceil(veh.shape.p.length) + 1 }, (_, i) => Math.min(i, veh.shape.p.length))
   let pinLoad = 0
+  let pinLoadMin = 0
+  let pinCount = 0
   let bodyContact = false
-  const deriv = (x: Rigid): DRigid => {
+  let hullBump = false
+  const deriv = (x: Rigid, tau: number): DRigid => {
     let F = qrot(x.q, Fb)
     let M = Mb
     if (contactOn) {
-      const rel = toPad(sub(x.r, padEci))
-      const vg = toPad(sub(x.v, corotation(x.r)))
+      // Contact geometry is Earth-fixed: the tower does not move with the ship's ECI velocity.
+      // Use the Earth rotation angle at the RK4 stage time, else the co-rotating ship appears to
+      // drift east by corotation·h (≈ 1.4 m per 4 ms at the pad) — larger than the 0.1 m pin/hull
+      // clearance, which produced a spurious lateral hull contact for a centred caught ship.
+      const thetaStage = theta + OMEGA_EARTH * tau
+      const rel = ecefToEnu(W.padEnu, sub(rotZ(x.r, -thetaStage), W.padEcef))
+      const vg = ecefToEnu(W.padEnu, rotZ(sub(x.v, corotation(x.r)), -thetaStage))
       const wI = qrot(x.q, x.w)
       const at = (b: V3): { p: V3; v: V3 } => {
         const off = qrot(x.q, b)
-        return { p: add(rel, toPad(off)), v: add(vg, toPad(cross(wI, off))) }
+        return {
+          p: add(rel, ecefToEnu(W.padEnu, rotZ(off, -thetaStage))),
+          v: add(vg, ecefToEnu(W.padEnu, rotZ(cross(wI, off), -thetaStage))),
+        }
       }
       const pins = [1, -1].map((sg) => at(v3(veh.pinX - mp.xcg, sg * veh.pinOut, 0)))
       const hull = hullX.map((xx) => ({ ...at(v3(xx - mp.xcg, 0, 0)), r: veh.shape.r(xx) }))
       const c = towerContact(s.arms, rel, pins, hull)
       pinLoad = c.pinLoad
+      pinLoadMin = c.pinLoadMin
+      pinCount = c.pinCount
       bodyContact = c.bodyContact
       F = add(F, fromPad(c.F))
       M = add(M, qrotInv(x.q, fromPad(c.M)))
@@ -206,16 +235,56 @@ export const step = (W: World, s: SimState): StepOut => {
     return { dr: x.v, dv: a, dq: qDot(x.q, x.w), dw: wdot }
   }
   const x0: Rigid = { r: s.r, v: s.v, q: s.q, w: s.w }
-  const k1 = deriv(x0)
-  const k2 = deriv(addR(x0, k1, dt / 2))
-  const k3 = deriv(addR(x0, k2, dt / 2))
-  const k4 = deriv(addR(x0, k3, dt))
   const comb = <T extends V3>(a: T, b: T, c: T, d: T): V3 => scale(add(add(a, scale(add(b, c), 2)), d), 1 / 6)
-  const r = add(s.r, scale(comb(k1.dr, k2.dr, k3.dr, k4.dr), dt))
-  const v = add(s.v, scale(comb(k1.dv, k2.dv, k3.dv, k4.dv), dt))
-  const w = add(s.w, scale(comb(k1.dw, k2.dw, k3.dw, k4.dw), dt))
-  const dq = { w: (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w) / 6, x: (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x) / 6, y: (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y) / 6, z: (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z) / 6 }
-  const q = qnormalize(qAddScaled(s.q, dq, dt))
+  const rk4 = (x: Rigid, h: number, tau: number): Rigid => {
+    const k1 = deriv(x, tau)
+    const k2 = deriv(addR(x, k1, h / 2), tau + h / 2)
+    const k3 = deriv(addR(x, k2, h / 2), tau + h / 2)
+    const k4 = deriv(addR(x, k3, h), tau + h)
+    const dq = { w: (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w) / 6, x: (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x) / 6, y: (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y) / 6, z: (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z) / 6 }
+    return {
+      r: add(x.r, scale(comb(k1.dr, k2.dr, k3.dr, k4.dr), h)),
+      v: add(x.v, scale(comb(k1.dv, k2.dv, k3.dv, k4.dv), h)),
+      w: add(x.w, scale(comb(k1.dw, k2.dw, k3.dw, k4.dw), h)),
+      q: qnormalize(qAddScaled(x.q, dq, h)),
+    }
+  }
+  // Tunneling guard: near the tower, cap every hull station's travel to 0.5 m per RK4 step. The
+  // thinnest modelled members (QD arm truss, light masts) are > 1 m; this keeps a fast strike inside
+  // the continuous contact/sphere radius even before the swept impulse below is applied.
+  const hullLever = Math.max(mp.xcg, veh.shape.p.length - mp.xcg, 1)
+  const maxHullSpeed = norm(velPad) + norm(s.w) * hullLever
+  const nSub = contactOn ? Math.min(16, Math.max(1, Math.ceil((maxHullSpeed * dt) / 0.5))) : 1
+  const h = dt / nSub
+  let x = x0
+  let tau = 0
+  for (let k = 0; k < nSub; k++) { x = rk4(x, h, tau); tau += h }
+  let r = x.r
+  let v = x.v
+  const w = x.w
+  const q = x.q
+  // Swept sphere guard + real bump: if a hull station crossed structure during the step, remove the
+  // inward normal velocity (small restitution) and translate the ship back to the first-touch plane.
+  if (contactOn) {
+    const endTheta = theta + OMEGA_EARTH * dt
+    const startRel = relPad
+    const endRel = ecefToEnu(W.padEnu, sub(rotZ(r, -endTheta), W.padEcef))
+    const hullEnd = hullX.map((xx) => {
+      const off = qrot(q, v3(xx - mp.xcg, 0, 0))
+      const off0 = qrot(s.q, v3(xx - mp.xcg, 0, 0))
+      return {
+        p: add(endRel, ecefToEnu(W.padEnu, rotZ(off, -endTheta))),
+        p0: add(startRel, ecefToEnu(W.padEnu, rotZ(off0, -theta))),
+        r: veh.shape.r(xx),
+      }
+    })
+    const hit = resolveHullImpact(s.arms, hullEnd, mp.m, ecefToEnu(W.padEnu, rotZ(sub(v, corotation(r)), -endTheta)))
+    if (hit) {
+      hullBump = true
+      v = add(v, fromPad(hit.dv))
+      r = add(r, fromPad(hit.push))
+    }
+  }
   // ---------- consumables ----------
   const mr = veh.mixtureRatio
   const prop = engOut.mdot * dt
@@ -240,6 +309,13 @@ export const step = (W: World, s: SimState): StepOut => {
   const heat = thermalDue ? surfaceHeating(W.grid, hin) : null
   const th = heat ? thermalStep(W.grid, veh, s.th, heat, s.t - s.thT) : s.th
   const thT = thermalDue ? s.t : s.thT
+  // aft flap thermal node: base/wake flux plus the engine plume when the Raptors burn
+  const flapTh = veh.aftFlaps && s.flapTh && heat
+    ? aftFlapThermalStep(s.flapTh, veh.aftFlaps, {
+      qBase: aftBaseHeatFlux(heat.qStagCold, veh.aftFlaps.baseHeatFraction),
+      qPlume: plumeHeatFlux(engOut.thrust, veh.aftFlaps.plumeDistance),
+    }, s.t - s.thT)
+    : s.flapTh
   const tsum = thermalSummary(W.grid, th, veh.coil.x)
   // ---------- magnet, arms, turbulence ----------
   const coil = coilStep(veh.coil, s.coil, { command: cmd.coil, warmWallT: tsum.coilWallT, mhdPower: mhdOut.power, avionicsLoad: 2500 }, dt)
@@ -261,7 +337,7 @@ export const step = (W: World, s: SimState): StepOut => {
     steel: Math.max(s.peak.steel, tsum.steelMax), mhdForce: Math.max(s.peak.mhdForce, mhdOut.forceMag), coilT: Math.max(s.peak.coilT, coil.Tc),
   }
   const next: SimState = {
-    t: s.t + dt, r, v, q, w, cons, eng, coil, th, thT, qStag, arms, turb, mem: g.mem,
+    t: s.t + dt, r, v, q, w, cons, eng, coil, th, thT, qStag, arms, turb, flaps, flapCmd: cmdFlaps, flapTh, mem: g.mem,
     mhdBasis: basis, mhdT, mhdU, mhdOut, rcsDuty: rcs.duty, seeding: cmd.seeding,
     events, done: outcome !== "running", outcome, peak,
   }
@@ -298,12 +374,12 @@ export const step = (W: World, s: SimState): StepOut => {
   rcs.duty.forEach((d, i) => { row[CH.r0 + i] = d })
   set("pe", relPad.x); set("pn", relPad.y); set("pu", relPad.z); set("ve", velPad.x); set("vn", velPad.y); set("vu", velPad.z)
   set("pinX", pinRel.x); set("pinY", pinRel.y); set("pinZ", pinRel.z); set("hBase", hBase); set("arms", arms.open)
-  set("pinLoad", pinLoad); set("windE", windEnu.x); set("windN", windEnu.y)
+  set("pinLoad", pinLoad); set("pinLoadMin", pinLoadMin); set("pinCount", pinCount)
+  set("bodyContact", bodyContact ? 1 : 0); set("hullBump", hullBump ? 1 : 0)
+  set("windE", windEnu.x); set("windN", windEnu.y)
   set("predDR", g.mem.pred ? g.mem.pred.downrangeErr : 0); set("predCR", g.mem.pred ? g.mem.pred.crossrangeErr : 0); set("npcMhd", g.mem.mhdScale); set("bellyHdg", g.mem.heading ?? 0); set("bellyMiss", g.mem.bellyMiss)
-  void bodyContact
   void clamp
   void enuToEcef
-  void ecefToEnu
   void normalize
   return { s: next, row, temps: surfaceTemps(W.grid, th), pred: g.mem.predPath }
 }

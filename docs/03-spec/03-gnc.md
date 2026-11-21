@@ -21,9 +21,10 @@ acceptance yet · `[ ]` open.
 | highAlpha | **planned-reversal NPC**: \|σ\| for downrange, t_rev for crossrange, 5 s lead, bias to the correctable side | lift by σ (lift transport, 1.5°/s) | cold gas (α-axis free), barbecue 4°/s > 1.3 km/s | M < 2 | [x] |
 | bellyFlop (shallow) | same law, belly trim, 1.8°/s | σ | cold gas | γ < −60° | [x] |
 | bellyFlop (steep) | ground-azimuth ψ law, (ψ₁, τ, ψ₂) search; last 6 km: nose to the N/E/S/W nearest the pad bearing + catch roll | ψ, roll for the pins | cold gas | h < flip altitude | [x] (miss 0.67–1.8 km) |
-| flip | sink-rate kill, near-vertical thrust (≤ 10° tilt) | thrust direction, roll held (2°/s) | **2 × Raptor SL** from ignition, gimbals (R11c: no cold gas from here on) | pointing < 12° & rates < 3°/s, or v_z > −10 m/s | [x] / R11c [x] |
-| landing | **MPC** (TS-02, TS-15 lag model), arrival time, tilt cone, min-thrust bound | thrust direction, pins → E/W | **2 Raptors** (R11c), differential gimbal incl. roll; no cold gas | < 3 m, < 1.5 m/s, 3 m above the aim | [~] no catch |
-| terminal | timed deceleration to the rails (T/W ≥ 1.8 with two engines: no hover), v → 0 at pin contact | same | ≥ 2 Raptors, no cold gas | pin load > 45 % weight | [~] implemented, no catch |
+| flip | sink-rate kill, near-vertical thrust (≤ 10° tilt) | thrust direction, roll held | **3 × Raptor SL** for the rotation, then shutdown to 1 | pointing < 12° & rates < 3°/s, or v_z > −10 m/s | [x] / sequence revised 2026-11-21 |
+| landing (1-engine) | **MPC path** (TS-02, TS-15), real-time replan; guided fall on 1 Raptor | thrust direction, pins → E/W | **1 × Raptor SL**, gimbal pitch/yaw + **short roll-only cold-gas pulses** (user 2026-11-21); no translational RCS | add engines before the vertical/lateral budget is exhausted | [~] no catch |
+| landing (staged) | same MPC; stage 1 → 2 (3 only if the decel needs it) | thrust direction, pins → E/W | 2–3 Raptors, gimbal + roll-only RCS; no translational cold gas | < 3 m, < 1.5 m/s, 3 m above the aim | [~] no catch |
+| terminal | timed deceleration to the rails (2×40 % T/W 1.34 at 136.6 t: no hover), v → 0 at pin contact | same | 1–3 Raptors, roll-only RCS; engines off instantly on `caught` | both pins loaded, ≤1 m / ≤1 m/s | [~] implemented, no catch |
 
 **Actuators by regime (R11).**
 
@@ -111,8 +112,9 @@ MEKF, Apache-2.0) for Monte Carlo realism. — [ ]
   Artificial ionisation would need ≈ 10¹¹–10¹³ W against recombination (on board: 450 kW). An MHD plume deflector
   was studied and rejected (spec/09: ≤ 2.5 kN per engine vs 634 kN from a 15° gimbal, 2.6–5.1 t with caesium).
 - **The fall below 30 km stays stable without the coil:** the flapless hull trims passively at high α in the
-  belly flop (statically stable in pitch/yaw), cold gas flies bank and heading, and after the flip the Raptor
-  gimbals (≥ 2 engines, R11c) take all three axes.
+  belly flop (statically stable in pitch/yaw), cold gas flies bank and heading, and after the flip one Raptor
+  gimbal takes pitch/yaw while **short roll-only cold-gas pulses** take roll; 2/3 engines are staged in for the
+  deceleration. Translational cold gas remains forbidden; R11c is revised accordingly (user 2026-11-21).
 - **Switch-off is dynamic and complete (2026-11-21):** guidance keeps the coil while its own authority estimate
   (achievable MHD moment ÷ demanded moment) is ≥ 1; after 3 s below 1, or when the plasma is gone, it commands a
   **planned discharge** through the 1 Ω tap of the dump resistor bank (V = I_op·R = 3 kV, the insulation limit;
