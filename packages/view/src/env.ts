@@ -44,8 +44,12 @@ export const makeSky = (): { sky: Sky; setSun: (dirThree: THREE.Vector3, altitud
 
 export const makeStars = (): THREE.Points => {
   const n = 4000, pos = new Float32Array(n * 3), col = new Float32Array(n * 3)
+  // Far outside both the local Earth (R = 6371 km) and the 17 000 km globe camera, but inside the
+  // camera far plane (5e8 m): the Earth's opaque disc then covers every star line of sight at every
+  // altitude, in the chase view and in globe view. At the old 300 km radius the whole star sphere
+  // sat inside the globe model, so the globe view had no stars above the limb.
   for (let i = 0; i < n; i++) {
-    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, r = 3.0e5
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, r = 2.0e8
     const s = Math.sqrt(1 - u * u)
     pos.set([r * s * Math.cos(th), r * u, r * s * Math.sin(th)], i * 3)
     const b = 0.5 + Math.random() * 0.5
@@ -230,23 +234,59 @@ export const makeCoast = (shoreE = 950): Coast => {
   const root = new THREE.Group()
   const gtex = groundTexture()
   // 300 km planes: from 10 km altitude the horizon is ≈ 360 km away, the flat-plane sag at 150 km is
-  // ≈ 1.8 km (hidden by haze); beyond that the Earth sphere takes over
+  // ≈ 1.8 km (hidden by haze); beyond that the Earth sphere takes over. The planes are alpha-faded to
+  // the Earth before their 150 km north/south ends (the old hard edge read as a straight seam at
+  // 20–30 km) and the far east/west ends; see `coastFade` below.
   const W = 300e3
   const GRID = 256 // subdivisions: one 300 km quad fails the depth test against objects a few metres tall
   gtex.repeat.set(W / 250, W / 250)
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, W, GRID, GRID), new THREE.MeshStandardMaterial({ map: gtex, roughness: 1 }))
+  const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 1 })
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, W, GRID, GRID), groundMat)
   ground.rotation.x = -Math.PI / 2
   ground.position.set(shoreE - W / 2, -0.05, 0)
   ground.receiveShadow = true
-  const beach = new THREE.Mesh(new THREE.PlaneGeometry(90, W, 2, GRID), new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 1 }))
+  const beachMat = new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 1 })
+  const beach = new THREE.Mesh(new THREE.PlaneGeometry(90, W, 2, GRID), beachMat)
   beach.rotation.x = -Math.PI / 2
   beach.position.set(shoreE + 45, -0.04, 0)
   beach.receiveShadow = true
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(75, 75, 0.4, 64), new THREE.MeshStandardMaterial({ color: 0xbab6aa, roughness: 0.95 }))
+  const padMat = new THREE.MeshStandardMaterial({ color: 0xbab6aa, roughness: 0.95 })
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(75, 75, 0.4, 64), padMat)
   pad.position.y = 0.1
   pad.receiveShadow = true
+  // Pad-frame point the local planes fade around (updated from the root each frame), and the fade
+  // band: pad-scale detail survives, the hard 150 km north/south ends and 300 km east/west ends
+  // dissolve into the Earth sphere before they can be seen as a straight seam at altitude.
+  const coastPad = { value: new THREE.Vector2() }
+  const coastFadeRange = { value: new THREE.Vector2(95e3, 140e3) }
+  /**
+   * Alpha-fade an opaque ground material towards the Earth sphere by distance from the pad (the
+   * fog-free equivalent of an aerial-perspective hand-off; the plane ends are outside the opaque
+   * near field and invisible after the fade).
+   */
+  const coastFade = (m: THREE.MeshStandardMaterial): void => {
+    m.transparent = true
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uCoastPad = coastPad
+      sh.uniforms.uCoastFade = coastFadeRange
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCoastW;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCoastW = (modelMatrix * vec4(transformed, 1.0)).xyz;")
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCoastW;\nuniform vec2 uCoastPad;\nuniform vec2 uCoastFade;")
+        .replace("#include <opaque_fragment>", `#include <opaque_fragment>
+          gl_FragColor.a *= 1.0 - smoothstep(uCoastFade.x, uCoastFade.y, distance(vCoastW.xz, uCoastPad));`)
+    }
+    m.customProgramCacheKey = () => "coast-fade-v1"
+  }
+  coastFade(groundMat)
+  coastFade(beachMat)
+  coastFade(padMat)
   const water = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uSun: { value: new THREE.Vector3(0, 1, 0) }, uSky: { value: new THREE.Color(0.55, 0.7, 0.9) }, uOpacity: { value: 1 } },
+    uniforms: {
+      uTime: { value: 0 }, uSun: { value: new THREE.Vector3(0, 1, 0) }, uSky: { value: new THREE.Color(0.55, 0.7, 0.9) }, uOpacity: { value: 1 },
+      uCoastPad: coastPad, uCoastFade: coastFadeRange,
+    },
     vertexShader: /* glsl */ `
       #include <common>
       #include <logdepthbuf_pars_vertex>
@@ -257,6 +297,7 @@ export const makeCoast = (shoreE = 950): Coast => {
     fragmentShader: /* glsl */ `
       #include <logdepthbuf_pars_fragment>
       uniform float uTime; uniform vec3 uSun; uniform vec3 uSky; uniform float uOpacity; varying vec3 vW;
+      uniform vec2 uCoastPad; uniform vec2 uCoastFade;
       // each wave fades out once its phase changes by more than ~1 rad per pixel (no moiré at range)
       vec2 wave(vec2 p, vec2 d, float k, float a, float s){ float x = dot(p,d)*k; float aa = clamp(1.5 - fwidth(x), 0.0, 1.0); return d*(a*k*cos(x + uTime*s))*aa; }
       void main(){
@@ -272,10 +313,16 @@ export const makeCoast = (shoreE = 950): Coast => {
         float shore = smoothstep(0.0, 900.0, vW.x - ${shoreE.toFixed(1)});
         vec3 base = mix(shallow, deep, shore);
         vec3 H = normalize(L + V);
-        float spec = pow(max(dot(N,H),0.0), 420.0)*6.0 + pow(max(dot(N,H),0.0), 40.0)*0.25;
+        // A 30 km oblique view spans ~0.5–1 km per pixel: the wave slopes are pre-filtered by the
+        // fwidth fade, but the residual glint still covered tens of kilometres and bloomed into a
+        // white blob. Keep the near-field sparkle, soft-cap it below the 2.5 bloom threshold.
+        float glint = pow(max(dot(N,H),0.0), 420.0)*2.0 + pow(max(dot(N,H),0.0), 40.0)*0.10;
         float foam = smoothstep(60.0, 0.0, vW.x - ${shoreE.toFixed(1)} - 90.0) * (0.5 + 0.5*sin(vW.z*0.05 + uTime*1.7));
-        vec3 col = mix(base, uSky, fres) + vec3(1.0,0.95,0.85)*spec*max(L.y,0.0) + vec3(0.9)*foam*0.35;
-        gl_FragColor = vec4(col, uOpacity);
+        vec3 col = mix(base, uSky, fres) + vec3(1.0,0.95,0.85)*min(glint, 1.1)*max(L.y,0.0) + vec3(0.9)*foam*0.35;
+        float Y = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        if (Y > 1.6) col *= (1.6 + 0.7 * (1.0 - exp(-(Y - 1.6) / 0.7))) / Y;
+        float fade = 1.0 - smoothstep(uCoastFade.x, uCoastFade.y, distance(p, uCoastPad));
+        gl_FragColor = vec4(col, uOpacity * fade);
       }`,
     transparent: true,
   })
@@ -283,15 +330,20 @@ export const makeCoast = (shoreE = 950): Coast => {
   sea.rotation.x = -Math.PI / 2
   sea.position.set(shoreE + 90 + W / 2, -0.3, 0)
   root.add(ground, beach, pad, sea)
-  const fadeMats = [ground.material, beach.material, pad.material] as THREE.MeshStandardMaterial[]
+  // Coast planes draw in the transparent pass, before the global cloud shell/atmosphere/cloud shadow,
+  // so the local cloud shadow still multiplies the ground and the sea still reads under the clouds.
+  for (const m of [ground, beach, pad, sea]) m.renderOrder = -6
+  const fadeMats = [groundMat, beachMat, padMat]
   let lastK = -1
   const setFade = (k: number): void => {
+    coastPad.value.set(root.position.x, root.position.z)
     if (Math.abs(k - lastK) < 1e-3) return
     lastK = k
-    const tr = k < 0.999
-    for (const m of fadeMats) { if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true } m.opacity = k; m.depthWrite = !tr }
+    // The planes are always transparent: the radial alpha fade is only visible above a few km, but
+    // keeping the state stable avoids a shader recompile at the hand-off altitude.
+    for (const m of fadeMats) m.opacity = k
     water.uniforms.uOpacity.value = k
-    water.depthWrite = !tr
+    water.depthWrite = k > 0.999
   }
   return { root, water, setFade }
 }

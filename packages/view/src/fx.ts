@@ -190,7 +190,7 @@ export const makePlumeMaterial = (): THREE.ShaderMaterial => new THREE.ShaderMat
     ${NOISE}
     void main(){
       #include <logdepthbuf_fragment>
-      float s = 1.0 - vUv.y;                    // 0 at the nozzle exit, 1 at the tail
+      float s = vUv.y;                          // 0 at the nozzle exit, 1 at the tail
       float chord = pow(abs(dot(normalize(vN), normalize(vV))), 0.8);
       float core = exp(-s * 4.0);
       float cells = uPamb * pow(0.5 * (1.0 + cos(s * 34.0)), 6.0) * exp(-s * 3.5);

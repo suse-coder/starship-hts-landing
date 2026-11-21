@@ -150,7 +150,11 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
     rp.group.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true })
     if (e.kind === "SL") {
       const mat = makePlumeMaterial()
-      const cone = new THREE.Mesh(new THREE.CylinderGeometry(rp.exitR * 0.9, rp.exitR * 2.2, 1, 32, 1, true), mat)
+      // +Y of the cylinder is the far tail (the cone is rotated +90° about z, so +Y → −X): wide at
+      // the tail and narrow at the nozzle exit, i.e. the jet expands downstream. The old radii were
+      // reversed and the shader's axial coordinate ran from tail to nozzle, so the bright core and
+      // Mach cells sat at the tip.
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(rp.exitR * 2.2, rp.exitR * 0.9, 1, 32, 1, true), mat)
       cone.rotation.z = Math.PI / 2 // cylinder +Y → body −x (top at the exit)
       cone.renderOrder = 5
       g.add(cone)

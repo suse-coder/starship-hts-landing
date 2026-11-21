@@ -25,11 +25,20 @@ Pushing to `main` runs `.github/workflows/pages.yml` (the same typecheck/test/bu
 `packages/app/dist` and deploys with `actions/deploy-pages`). The workflow is the deploy path; the
 gate above is the authority.
 
-## Private WIP
+## Public WIP deployment (approved 2026-11-21)
 
-Private work-in-progress is allowed at any time: local `bun run dev`, private repos, or a private
-Preview deployment. WIP builds may show a lost catch or over-limit heating, but must not be presented
-as the public mission result. Do not enable public Pages merely because CI is green.
+The user explicitly approved a public WIP repo and Pages site:
+
+- Repo: <https://github.com/suse-coder/starship-hts-landing>
+- Site: <https://suse-coder.github.io/starship-hts-landing/>
+- Workflow run 44940950934: build + deploy green; the page loads, simulates in the worker and shows
+  `LOST: landing missed the arms · OUTSIDE TPS LIMITS`.
+- This is a labelled WIP snapshot, not a successful-mission release. Keep the banner; do not present
+  it as a caught/operational result.
+
+Private work-in-progress is also allowed at any time. WIP builds may show a lost catch or over-limit
+heating, but must not be presented as the public mission result. Do not enable a success-release
+deployment merely because CI is green.
 
 ## Status is not inferred from CI
 

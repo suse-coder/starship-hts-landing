@@ -12,6 +12,9 @@
 > [docs/03-spec/11-release.md](docs/03-spec/11-release.md) and the
 > [current status in the roadmap](docs/02-plan/00-roadmap.md#current-status--2026-11-21).
 
+**Live WIP site:** <https://suse-coder.github.io/starship-hts-landing/> — the deployed run currently
+ends `LOST` and the TPS badge reports outside limits. It is a WIP snapshot, not a successful mission.
+
 This is a research and engineering simulation project, not SpaceX software and not a flight-proven
 vehicle. It exists to answer one question honestly: **can a Starship-derived vehicle with no flaps
 return from orbit and be caught by the tower, using a superconducting (REBCO) coil in the nose to

@@ -38,8 +38,8 @@ A public release requires **all** of the following. M3 and M8 are not ticked unt
 | R-3 | **T‑mc robustness** | Monte Carlo over wind, Hall closure κ, magnetic field B and mass ±5 %: **≥ 18/20 caught** within the catch envelope, with a positive wind margin | **NOT RUN.** A single nominal run, even if caught, does not satisfy this gate. |
 | R-4 | **No false or disabled physics** | review/00 audit current; no state writes outside the integrators; no phase-disabled physics; no hidden aero/MHD oracle; R11a cold-gas use reported | **PARTIAL.** Review/01 found R6/R11a/R11c issues; R6 and R11c were fixed, R11a remains open in T14. |
 | R-5 | **Verification green** | `bun run typecheck` clean; `bun run test` green; the two `test.todo` acceptance items resolved or explicitly accepted; T-mission and T-catch-envelope passing | **PARTIAL.** Typecheck clean; 238 pass, 2 todo, 0 fail. T-mission/T-catch are open. |
-| R-6 | **Build and deployment** | `bun run build` succeeds; Pages workflow green on a test branch; the public URL renders the current recording with the WIP/failure banner | **NOT STARTED.** No public deployment. |
-| R-7 | **User approval** | The user explicitly approves the public repository, the Pages deployment and the wording of the release | **PENDING.** Do not create the public repo before this. |
+| R-6 | **Build and deployment** | `bun run build` succeeds; Pages workflow green on a test branch; the public URL renders the current recording with the WIP/failure banner | **WIP DEPLOYED.** <https://suse-coder.github.io/starship-hts-landing/>; run 44940950934 green; loaded end-to-end, outcome `LOST`, TPS badge outside limits. This is the public WIP snapshot, not a success release. |
+| R-7 | **User approval** | The user explicitly approves the public repository, the Pages deployment and the wording of the release | **WIP APPROVED.** The user approved the public WIP repo/Pages on 2026-11-21; the success-release approval is still pending. |
 
 ## 3. Exact blockers
 
