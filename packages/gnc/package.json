@@ -1,0 +1,19 @@
+{
+  "name": "@ship/gnc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Guidance, navigation and control: 3-DOF predictor, mission targeting, entry predictor-corrector, attitude control and actuator allocation",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ship/math": "workspace:*",
+    "@ship/earth": "workspace:*",
+    "@ship/gas": "workspace:*",
+    "@ship/craft": "workspace:*",
+    "@ship/aero": "workspace:*",
+    "@ship/mhd": "workspace:*",
+    "@ship/tower": "workspace:*"
+  }
+}

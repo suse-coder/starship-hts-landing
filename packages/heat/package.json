@@ -1,0 +1,9 @@
+{
+  "name": "@ship/heat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aerothermodynamics and TPS response: Sutton-Graves/Lees/Eckert heating, PICA-X ablation and pyrolysis, bare-steel walls",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*", "@ship/gas": "workspace:*", "@ship/craft": "workspace:*" }
+}

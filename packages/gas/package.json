@@ -1,0 +1,9 @@
+{
+  "name": "@ship/gas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "High-temperature air: 9-species equilibrium thermochemistry from partition functions, real-gas normal shock, plasma transport, shock tables",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*" }
+}

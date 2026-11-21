@@ -1,0 +1,38 @@
+{
+  "name": "starship-mhd",
+  "private": true,
+  "type": "module",
+  "description": "Flapless Starship (Ship 42 / Flight 15) with an HTS magnetohydrodynamic plasma coil — full-physics deorbit-to-catch simulation engine and 3D playback in the browser",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "vite packages/app --port 5199 --host",
+    "build": "vite build packages/app",
+    "preview": "vite preview packages/app --port 5199",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test packages",
+    "check": "bun run typecheck && bun run test",
+    "mission": "bun scripts/mission.ts",
+    "tables": "bun packages/gas/scripts/gen-table.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/three": "^0.187.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "@ship/math": "workspace:*",
+    "@ship/earth": "workspace:*",
+    "@ship/gas": "workspace:*",
+    "@ship/craft": "workspace:*",
+    "@ship/aero": "workspace:*",
+    "@ship/heat": "workspace:*",
+    "@ship/mhd": "workspace:*",
+    "@ship/tower": "workspace:*",
+    "@ship/gnc": "workspace:*",
+    "@ship/sim": "workspace:*",
+    "@ship/view": "workspace:*"
+  }
+}

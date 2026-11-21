@@ -1,0 +1,65 @@
+name: Pages
+
+# Public deploy gate: see .github/RELEASE.md. A green build is necessary but not sufficient —
+# the simulation must reach a true catch, pass TPS/T-mc, and have explicit user approval.
+
+on:
+  # Manual only until the public-release gate in .github/RELEASE.md is satisfied. The push trigger
+  # is enabled by the release process, not by a normal WIP commit (a green build is not a catch).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

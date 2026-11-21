@@ -1,0 +1,24 @@
+{
+  "name": "@ship/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser application: timeline scrubbing, telemetry, charts, design panel",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "three": "^0.187.0",
+    "@ship/math": "workspace:*",
+    "@ship/earth": "workspace:*",
+    "@ship/craft": "workspace:*",
+    "@ship/heat": "workspace:*",
+    "@ship/sim": "workspace:*",
+    "@ship/view": "workspace:*"
+  },
+  "scripts": {
+    "dev": "vite --port 5199 --host",
+    "build": "vite build",
+    "preview": "vite preview --port 5199"
+  }
+}

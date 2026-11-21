@@ -1,0 +1,21 @@
+/** Physical constants (SI, CODATA 2018 / WGS84 / IERS). */
+export const MU_EARTH = 3.986004418e14 // m^3/s^2
+export const R_EQ = 6378137.0 // WGS84 semi-major axis, m
+export const F_WGS = 1 / 298.257223563
+export const E2_WGS = F_WGS * (2 - F_WGS)
+export const R_POL = R_EQ * (1 - F_WGS)
+export const J2 = 1.08262668e-3
+export const OMEGA_EARTH = 7.292115e-5 // rad/s
+export const G0 = 9.80665
+export const SIGMA_SB = 5.670374419e-8
+export const K_B = 1.380649e-23
+export const H_PLANCK = 6.62607015e-34
+export const E_CHARGE = 1.602176634e-19
+export const M_E = 9.1093837015e-31
+export const AMU = 1.66053906660e-27
+export const EPS0 = 8.8541878128e-12
+export const MU0 = 1.25663706212e-6
+export const N_A = 6.02214076e23
+export const R_UNIV = 8.314462618
+export const EV = E_CHARGE // J per eV
+export const C_LIGHT = 299792458

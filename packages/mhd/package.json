@@ -1,0 +1,9 @@
+{
+  "name": "@ship/mhd",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Magnetohydrodynamic heat shield/actuator: HTS coil field, shock-layer Lorentz forces with Hall effect and seeding, magnet circuit and cryogenics",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*", "@ship/gas": "workspace:*", "@ship/craft": "workspace:*" }
+}

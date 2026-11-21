@@ -1,0 +1,9 @@
+{
+  "name": "@ship/aero",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aerodynamic loads: modified Newtonian panels (hypersonic) blended with Jorgensen strip theory (supersonic/subsonic)",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/craft": "workspace:*" }
+}

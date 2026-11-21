@@ -1,0 +1,9 @@
+{
+  "name": "@ship/sim",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mission simulation engine: pure state machine and integrator, columnar recording, Web Worker entry",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*", "@ship/gas": "workspace:*", "@ship/craft": "workspace:*", "@ship/aero": "workspace:*", "@ship/heat": "workspace:*", "@ship/mhd": "workspace:*", "@ship/tower": "workspace:*", "@ship/gnc": "workspace:*" }
+}

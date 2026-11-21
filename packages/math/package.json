@@ -1,0 +1,9 @@
+{
+  "name": "@ship/math",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Immutable vectors, quaternions, numerics (interpolation, root finding, tridiagonal) and counter-based RNG",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {  }
+}

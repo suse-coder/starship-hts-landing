@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.tmp/
+*.log
+
+# local secrets / environment
+.env
+.env.*
+!.env.example
+.dev.vars
+.npmrc
+*.pem
+*.key
+*.p12
+
+# editor / tool caches
+.DS_Store
+.vite/
+coverage/
+*.tsbuildinfo
+.effect-harness/

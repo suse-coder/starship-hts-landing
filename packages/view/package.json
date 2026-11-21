@@ -1,0 +1,19 @@
+{
+  "name": "@ship/view",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Three.js rendering of a recorded mission frame: vehicle with exploded view, plasma/shock/field visuals, tower, Earth",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "three": "^0.187.0",
+    "@ship/math": "workspace:*",
+    "@ship/earth": "workspace:*",
+    "@ship/craft": "workspace:*",
+    "@ship/tower": "workspace:*",
+    "@ship/sim": "workspace:*",
+    "@ship/heat": "workspace:*"
+  }
+}

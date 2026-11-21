@@ -1,0 +1,9 @@
+{
+  "name": "@ship/tower",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mechazilla catch tower: chopstick arms and pin/hull contact mechanics",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*" }
+}

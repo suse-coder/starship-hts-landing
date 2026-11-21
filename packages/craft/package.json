@@ -1,0 +1,9 @@
+{
+  "name": "@ship/craft",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vehicle definition: outer mould line, component mass budget, mass properties, Raptor and cold-gas RCS models",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*" }
+}

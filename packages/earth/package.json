@@ -1,0 +1,9 @@
+{
+  "name": "@ship/earth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Planet model: WGS84 frames, J2 gravity, US Standard Atmosphere 1976, winds + Dryden turbulence, geomagnetic dipole, Sun, time scales",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@ship/math": "workspace:*" }
+}
