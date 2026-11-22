@@ -98,7 +98,7 @@ export const LAND = {
    * there the ship is centred and lowered onto the arms (hold-until-centred). Centred means inside
    * what the tracking arms can still reach (`across`, m) and the rails' length (`along`, m), slow.
    */
-  hover: { h: 6, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.12, kd: 1.1, aMax: 0.8 },
+  hover: { h: 6, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.25, kd: 0.9, aMax: 0.8, lead: 0.8, settle: 1.2, settleV: 0.3, settleKd: 0.8 },
   /**
    * Lateral tracking gains of the single-engine descent. The tilt → attitude path of one gimbal has
    * a lag of over a second; a lateral loop at the two-engine gains (0.3 / 1.0, ω_n 0.55 rad/s) sat
@@ -329,6 +329,16 @@ interface FieldEnv {
  */
 export const fieldCommand = (rel: V3, vel: V3, e: FieldEnv): { u: V3; tRail: number } => {
   const F = LAND.field, H = LAND.hover, K = LAND.keepOut
+  // Lateral law with the actuator lag in the reference. The command is a thrust direction, and the
+  // body takes ≈ 0.8 s to get there (one gimbal, ~1 g): a law on the *current* position therefore
+  // always answers late, passes the axis and comes back — the ±4 m terminal oscillation. Leading the
+  // position by the lag (x + v·τ) makes the loop answer where the ship *will* be, and inside the
+  // settle band only the velocity is nulled, so it parks on the pins instead of hunting.
+  const lat = (x: number, v: number): number => {
+    const lead = LAND.hover.lead
+    if (Math.abs(x) < H.settle && Math.abs(v) < H.settleV) return -H.settleKd * v
+    return -H.kp * (x + v * lead) - H.kd * v
+  }
   const d = Math.hypot(rel.x, rel.y), vh = Math.hypot(vel.x, vel.y)
   // Tower keep-out. The hull hangs ≈ 38 m below the pins, so long before the pins reach the rails
   // the aft section is level with the arms. The only way down is the corridor between the open
@@ -351,7 +361,9 @@ export const fieldCommand = (rel: V3, vel: V3, e: FieldEnv): { u: V3; tRail: num
     const dl = F.aB / (F.kp * F.kp)
     const vd = d <= dl ? F.kp * d : Math.sqrt(2 * F.aB * (d - dl / 2))
     const dx = d > 1e-6 ? rel.x / d : 0, dy = d > 1e-6 ? rel.y / d : 0
-    ax = F.kv * (-dx * vd - vel.x); ay = F.kv * (-dy * vd - vel.y)
+    // near the axis the lead/band law takes over from the approach profile
+    if (d < H.settle * 3) { ax = lat(rel.x, vel.x); ay = lat(rel.y, vel.y) }
+    else { ax = F.kv * (-dx * vd - vel.x); ay = F.kv * (-dy * vd - vel.y) }
     // vertical: the sink is coupled to the time the lateral correction still needs (the ship must
     // reach its floor when the horizontal motion is nulled, not before); below the floor it climbs
     const aLat = Math.max(G_DESCENT * Math.tan((F.tilt * Math.PI) / 180), 1.5)
@@ -367,8 +379,12 @@ export const fieldCommand = (rel: V3, vel: V3, e: FieldEnv): { u: V3; tRail: num
     const go = centred || committed
     vzT = go ? (rel.z > 0.5 ? -H.down : -e.contactSpeed) : above > 0 ? -0.6 : 0
     tRail = go ? Math.max(rel.z, 0) / H.down : Infinity
-    ax = clamp(-e.hoverKp * rel.x - e.hoverKd * vel.x, -H.aMax, H.aMax)
-    ay = clamp(-e.hoverKp * rel.y - e.hoverKd * vel.y, -H.aMax, H.aMax)
+    const kp = e.hoverKp ?? H.kp, kd = e.hoverKd ?? H.kd
+    const lead = H.lead
+    const band = (x: number, v: number): number =>
+      Math.abs(x) < H.settle && Math.abs(v) < H.settleV ? -H.settleKd * v : -kp * (x + v * lead) - kd * v
+    ax = clamp(band(rel.x, vel.x), -H.aMax, H.aMax)
+    ay = clamp(band(rel.y, vel.y), -H.aMax, H.aMax)
   }
   const uz = clamp(G_DESCENT + F.kz * (vzT - vel.z) - e.ez, 0.3 * e.lo, e.hi)
   const tiltMax = (rel.z > F.hLow ? F.tilt : F.tiltLow + (F.tilt - F.tiltLow) * Math.max(rel.z, 0) / F.hLow) * Math.PI / 180
