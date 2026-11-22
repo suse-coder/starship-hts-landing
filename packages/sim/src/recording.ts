@@ -41,6 +41,8 @@ export const CHANNELS = [
   ["n2", "N2 remaining", "kg"], ["rcsTau", "RCS torque", "N m"], ["header", "header propellant", "kg"],
   ["thrust", "total thrust", "N"], ["T1", "Raptor 1 thrust", "N"], ["T2", "Raptor 2 thrust", "N"], ["T3", "Raptor 3 thrust", "N"],
   ["gp", "gimbal pitch", "rad"], ["gy", "gimbal yaw", "rad"],
+  ["gp1", "SL1 gimbal pitch", "rad"], ["gp2", "SL2 gimbal pitch", "rad"], ["gp3", "SL3 gimbal pitch", "rad"],
+  ["gy1", "SL1 gimbal yaw", "rad"], ["gy2", "SL2 gimbal yaw", "rad"], ["gy3", "SL3 gimbal yaw", "rad"],
   ["r0", "thr nose+y", ""], ["r1", "thr nose-y", ""], ["r2", "thr nose+z", ""], ["r3", "thr nose-z", ""],
   ["r4", "thr aft+y", ""], ["r5", "thr aft-y", ""], ["r6", "thr aft+z", ""], ["r7", "thr aft-z", ""],
   ["r8", "roll+a", ""], ["r9", "roll+b", ""], ["r10", "roll-a", ""], ["r11", "roll-b", ""],
@@ -48,7 +50,8 @@ export const CHANNELS = [
   ["pe", "East of pad", "m"], ["pn", "North of pad", "m"], ["pu", "Up from pad", "m"],
   ["ve", "v East", "m/s"], ["vn", "v North", "m/s"], ["vu", "v Up", "m/s"],
   ["pinX", "pin offset E", "m"], ["pinY", "pin offset N", "m"], ["pinZ", "pins above rails", "m"],
-  ["hBase", "aft end height", "m"], ["arms", "arms open", ""], ["pinLoad", "pin load", "N"],
+  ["hBase", "aft end height", "m"], ["arms", "arms open", ""], ["armX", "arm pair centre offset E", "m"],
+  ["flapDep", "aft flap deployment", ""], ["flapD1", "aft flap 1 deflection", "rad"], ["flapD2", "aft flap 2 deflection", "rad"], ["pinLoad", "pin load", "N"],
   ["pinLoadMin", "minimum per-pin load", "N"], ["pinCount", "loaded pins", ""],
   ["bodyContact", "hull against tower structure", ""], ["hullBump", "swept hull impulse", ""],
   ["windE", "wind East", "m/s"], ["windN", "wind North", "m/s"],
@@ -100,10 +103,13 @@ export const recorder = (cells: number) => {
       for (let i = 0; i < N_CH; i++) cols[i].push(row[i])
       for (let i = 0; i < cells; i++) heat.push(temps[i])
       const p = new Float32Array(PRED_K * 3)
-      const m = pred ? Math.min(pred.length, PRED_K) : 0
-      for (let k = 0; k < m; k++) { p[k * 3] = pred![k].x; p[k * 3 + 1] = pred![k].y; p[k * 3 + 2] = pred![k].z }
-      // a short plan holds its last point so the spline never collapses toward the pad origin
-      for (let k = m; k < PRED_K && m > 0; k++) { p[k * 3] = p[(m - 1) * 3]; p[k * 3 + 1] = p[(m - 1) * 3 + 1]; p[k * 3 + 2] = p[(m - 1) * 3 + 2] }
+      const m = pred ? pred.length : 0
+      // the whole path, resampled to PRED_K points: the belly-flop plan is hundreds of points long
+      // and taking its head would show only the first seconds of the fall
+      for (let k = 0; k < PRED_K && m > 0; k++) {
+        const j = m === 1 ? 0 : Math.round((k * (m - 1)) / (PRED_K - 1))
+        p[k * 3] = pred![j].x; p[k * 3 + 1] = pred![j].y; p[k * 3 + 2] = pred![j].z
+      }
       preds.push(p)
       predHas.push(m > 1 ? 1 : 0)
     },

@@ -11,17 +11,21 @@
  *   f32[] pred: n × predK × 3
  *   u8[]  predHas: n
  *
+ * The recording is the **no-wind** mission: it is what the app plays when its "No wind" box is
+ * ticked (the default), so a visitor sees the catch without waiting for a simulation. With wind on,
+ * the app re-simulates.
+ *
  * Run: bun scripts/snapshot.ts
  */
 import { mkdirSync, statSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { DEFAULT_DESIGN } from "@ship/craft"
+import { FLIGHT_DESIGN } from "@ship/craft"
 import { N_CH, runMission } from "@ship/sim"
 import { physicsVersion } from "../packages/app/simVersion"
 
 const t0 = performance.now()
 let last = -1
-const { recording } = runMission(DEFAULT_DESIGN, (p) => {
+const { recording } = runMission({ ...FLIGHT_DESIGN, windScale: 0, turbulence: 0 }, (p) => {
   if (p.stage === "simulating") {
     const pct = Math.floor(p.fraction * 20) * 5
     if (pct !== last) { last = pct; process.stdout.write(`\r  simulating ${pct}%  ${p.phase} @ ${(p.alt / 1000).toFixed(0)} km   `) }

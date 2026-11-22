@@ -12,9 +12,12 @@ import { ASM_LABEL, type Assembly, makeParts, makePicaGeometry, makePicaMaps, ma
 export interface ShipFrame {
   readonly heat: Float32Array | null // surface temperature per thermal cell (K)
   readonly thrust: readonly number[] // N per sea-level engine
-  readonly gp: number
-  readonly gy: number
+  readonly gp: readonly number[] // per sea-level engine gimbal pitch (rad)
+  readonly gy: readonly number[] // per sea-level engine gimbal yaw (rad)
   readonly rcsDuty: readonly number[] // 12 thrusters
+  /** aft flap deployment 0..1 and per-flap deflection (rad) */
+  readonly flapDep: number
+  readonly flapD: readonly number[]
   readonly coilFrac: number // I / Iop
   readonly electrodes: readonly number[] // 8 loadings
   readonly qStag: number // W/m²
@@ -126,6 +129,62 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   hull.castShadow = true
   hull.receiveShadow = true
   layer("hull").add(hull)
+  // ---- aft flaps: two plates on circumferential hinges at the design's station/radius. The mesh
+  // swings from flush (tangential) to radial with the deployment and tilts with the deflection, so
+  // the animation shows exactly what the aero model is doing.
+  const flapMat = new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.42, side: THREE.DoubleSide })
+  const flapGroups: THREE.Group[] = []
+  const flapPlates: THREE.Mesh[] = []
+  if (v.aftFlaps) {
+    const set = v.aftFlaps
+    for (let k = 0; k < set.count; k++) {
+      const phi = set.azimuths[k] ?? 0
+      const c = Math.cos(phi), sn = Math.sin(phi)
+      const tangent = new THREE.Vector3(0, -sn, c)
+      const radial = new THREE.Vector3(0, c, sn)
+      const axis = new THREE.Vector3(1, 0, 0)
+      const g = new THREE.Group()
+      g.matrixAutoUpdate = false
+      g.matrix.makeBasis(tangent, axis, radial)
+      // the hinge sits on the skirt at the design station/radius; the plate extends forward (chord
+      // along +x) so it overlaps the skirt and is visibly attached
+      g.matrix.setPosition(set.xHinge, set.hingeRadius * c, set.hingeRadius * sn)
+      // the geometry is offset so the plate hangs from the hinge edge; rotating the mesh then swings
+      // it about the hinge line (the group's local x = the circumferential tangent)
+      const geo = new THREE.BoxGeometry(set.span, set.chord, Math.max(0.14, set.thickness))
+      geo.translate(0, set.chord / 2, 0)
+      const plate = new THREE.Mesh(geo, flapMat)
+      plate.castShadow = true
+      g.add(plate)
+      layer("aftFlaps").add(g)
+      flapGroups.push(g)
+      flapPlates.push(plate)
+    }
+  }
+  // ---- aft skirt and thrust structure: the hull stops at X_OPEN so the bells can gimbal, but the
+  // bay must be closed — without this the engines and flaps hang in the open. A frustum from the
+  // hull's aft edge down to the engine mount plate, plus the plate itself.
+  {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x9aa1a8, metalness: 0.85, roughness: 0.38, side: THREE.DoubleSide })
+    const rAft = v.shape.r(X_OPEN) * 0.995
+    // cylindrical aft skirt (the flap hinges sit on it at r ≈ 4.55, x ≈ 4.6), then a shallow dome to
+    // the engine mount plate; the bells hang below the plate
+    const skirt = lathe([new THREE.Vector2(rAft, X_OPEN), new THREE.Vector2(rAft, 4.2), new THREE.Vector2(3.6, 3.78), new THREE.Vector2(2.6, 3.7)], 64)
+    const skirtMesh = new THREE.Mesh(skirt, steel)
+    skirtMesh.castShadow = true
+    layer("hull").add(skirtMesh)
+    // engine mount plate (the bells bolt to this)
+    const plate = new THREE.Mesh(new THREE.CircleGeometry(2.55, 48), steel)
+    plate.rotation.y = -Math.PI / 2
+    plate.position.x = 3.7
+    plate.castShadow = true
+    layer("hull").add(plate)
+    // rim ring at the hull's aft edge, so the skirt reads as structure and not a floating cone
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(rAft, 0.12, 12, 64), steel)
+    rim.rotation.y = Math.PI / 2
+    rim.position.x = X_OPEN
+    layer("hull").add(rim)
+  }
   // PICA-X honeycomb cover on the nosecone only
   const picaGeo = makePicaGeometry(v.shape, v.pica.x0)
   const pm = makePicaMaps()
@@ -145,16 +204,13 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   // ---- engines (detailed) + plumes
   const plumes: { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; len: number; exitR: number }[] = []
   const slGroups: THREE.Group[] = []
+  const thrustArrows: THREE.ArrowHelper[] = []
   // The recording samples thrust at 25 Hz. Applying it raw makes the plume length/throttle step at
   // 25 Hz (the user's "30 Hz flicker"); low-pass every plume driver like the RCS puffs.
   const thrustSm = new Float64Array(v.engines.filter((e) => e.kind === "SL").length)
   let pAmbSm = 101325
   for (const e of v.engines) {
-    // Only the three sea-level Raptors are shown: they are the gimballing engines used from the flip
-    // to the catch. The vacuum engines (no gimbal, not fired on the return) and their large bells
-    // read as "rings" at the aft; their mounting pads stay in the thrust structure.
-    if (e.kind !== "SL") continue
-    const rp = makeRaptor("SL")
+    const rp = makeRaptor(e.kind === "SL" ? "SL" : "RVac")
     const g = new THREE.Group()
     g.position.set(e.gimbal.x, e.gimbal.y, e.gimbal.z)
     g.add(rp.group)
@@ -170,6 +226,15 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       cone.renderOrder = 5
       g.add(cone)
       plumes.push({ mesh: cone, mat, len: rp.length, exitR: rp.exitR })
+      // visible thrust vector from the gimbal point along the engine axis; the group's gimbal
+      // rotation tilts it, so each engine's vector is shown independently.
+      const arrow = new THREE.ArrowHelper(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 0), 1, 0xffb84d, 0.8, 0.35)
+      const am = arrow.line.material as THREE.Material
+      am.transparent = true; am.opacity = 0.9
+      const cm = arrow.cone.material as THREE.Material
+      cm.transparent = true; cm.opacity = 0.9
+      g.add(arrow)
+      thrustArrows.push(arrow)
       slGroups.push(g)
     }
     layer("engines").add(g)
@@ -305,6 +370,12 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   let lastStudio: boolean | null = null
   const fxMats = (): THREE.Material[] => [...puffs.map((m) => m.material as THREE.Material), fieldMat]
   const update = (f: ShipFrame): void => {
+    for (let k = 0; k < flapGroups.length; k++) {
+      const ang = f.flapDep * (Math.PI / 2) + (f.flapD[k] ?? 0)
+      flapPlates[k].rotation.x = ang
+      flapGroups[k].visible = f.flapDep > 0.005
+      flapPlates[k].visible = f.flapDep > 0.005
+    }
     if (f.studio !== lastStudio) {
       lastStudio = f.studio
       for (const m of fxMats()) { m.blending = f.studio ? THREE.NormalBlending : THREE.AdditiveBlending; m.needsUpdate = true }
@@ -340,7 +411,7 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
     const pRatio = Math.max(0, Math.min(1, pAmbSm))
     const expand = 1 + 2.5 * (1 - pRatio)
     slGroups.forEach((g, i) => {
-      g.rotation.set(0, f.gp, f.gy)
+      g.rotation.set(0, f.gp[i] ?? 0, f.gy[i] ?? 0)
       const T = f.thrust[i] ?? 0
       thrustSm[i] += (T - thrustSm[i]) * 0.18
       const Tsm = thrustSm[i]
@@ -352,6 +423,12 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       p.mat.uniforms.uTime.value = f.time
       p.mat.uniforms.uPamb.value = pRatio
       p.mat.uniforms.uThrottle.value = Math.min(1, Tsm / 1.5e6)
+      const a = thrustArrows[i]
+      if (a) {
+        const on = Tsm > 1e4 && !a.userData.off
+        a.visible = on
+        if (on) a.setLength(1 + 6 * Math.min(1, Tsm / 2.45e6), 0.8, 0.35)
+      }
     })
     puffs.forEach((m, i) => {
       const target = Math.min(1, f.rcsDuty[i] ?? 0)
@@ -453,6 +530,7 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
     {
       id: "ship", label: "Ship 42 (flapless HTS-MHD)", children: [
         { id: "hull", label: "Outer mould line — 301/30X steel + PICA-X honeycomb nosecone" },
+        { id: "aftFlaps", label: "Aft steering flaps (2) — deployed at coil-authority loss" },
         { id: "engines", label: "21/22 Raptor 3 ×3 SL + ×3 Vac" },
         { id: "coil", label: "51 HTS coil (REBCO)" },
         ...asms.map((a) => ({ id: `a:${a}`, label: ASM_LABEL[a], children: placed.filter((p) => p.asm === a).map((p) => ({ id: p.internal ? `p:${p.id}` : p.id, label: p.label })) })),
@@ -462,16 +540,17 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       id: "overlays", label: "Physics overlays", children: [
         { id: "plasma", label: "Plasma (sheath, wake, light)" }, { id: "shock", label: "Bow shock (with field, Δ)" }, { id: "mhdGhost", label: "Bow shock without field (Δ₀)" },
         { id: "field", label: "Magnetic field lines" }, { id: "electrodes", label: "Electrode sectors (loading)" }, { id: "heatGlow", label: "Steel incandescence" },
-        { id: "plumes", label: "Engine plumes" }, { id: "rcsJets", label: "Cold-gas jets" },
+        { id: "plumes", label: "Engine plumes" }, { id: "thrustVectors", label: "Engine thrust vectors (per-engine gimbal)" }, { id: "rcsJets", label: "Cold-gas jets" },
       ],
     },
   ]
   const setVisible = (id: string, on: boolean): void => {
     if (id === "plumes") { plumes.forEach((p) => (p.mesh.userData.off = !on)); return }
+    if (id === "thrustVectors") { thrustArrows.forEach((a) => (a.userData.off = !on)); return }
     if (id.startsWith("p:")) { if (on) hidden.delete(id); else hidden.add(id); return }
     if (id.startsWith("a:")) { placed.filter((p) => `a:${p.asm}` === id).forEach((p) => setVisible(p.internal ? `p:${p.id}` : p.id, on)); return }
     if (id === "ship") { ["hull", "engines", "coil", ...asms.map((a) => `a:${a}`)].forEach((k) => setVisible(k, on)); return }
-    if (id === "overlays") { ["plasma", "shock", "mhdGhost", "field", "electrodes", "heatGlow", "plumes", "rcsJets"].forEach((k) => setVisible(k, on)); return }
+    if (id === "overlays") { ["plasma", "shock", "mhdGhost", "field", "electrodes", "heatGlow", "plumes", "thrustVectors", "rcsJets"].forEach((k) => setVisible(k, on)); return }
     const g = layers.get(id)
     if (g) g.visible = on
   }

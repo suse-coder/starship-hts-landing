@@ -6,13 +6,16 @@
  *  1. **Trajectory generation** (`planDescent`, 2–3 Hz): a fuel-optimal, free-final-time powered
  *     descent from the current state to a terminal gate, solved as a convex program by lossless
  *     convexification (Açıkmeşe & Ploen 2007; Blackmore, Açıkmeşe & Scharf 2010):
- *       min ∫Γ dt   s.t.  ‖u‖ ≤ Γ,  ρ₁(m) ≤ Γ ≤ ρ₂(m),  ‖u_h‖ ≤ tanθ·u_z,
+ *       min ∫Γ dt   s.t.  ‖u‖ ≤ Γ,  Γ ≤ ρ₂(m),  u_z ≥ ρ₁(m)·cosθ,  ‖u_h‖ ≤ tanθ·u_z,
  *                         ‖u_{k+1} − u_k‖ ≤ r·h,  glide-slope cone,  p(t_f) = p_f,  v(t_f) = v_f.
- *     The thrust floor (two Raptors at 40 % give T/W > 1: no hover) is the Γ lower bound — the
- *     non-convex |u| ≥ ρ₁ constraint is not approximated, it is relaxed losslessly. The plan models
- *     what the old law ignored: propellant depletion (ρ₁, ρ₂ follow the predicted mass), drag and a
- *     measured disturbance acceleration, the thrust-vector slew the attitude loop can follow, and a
- *     thrust direction that is upright at the gate. Controls are first-order-hold (continuous).
+ *     The thrust floor (two Raptors at 40 % give T/W > 1: no hover) enters as the convex *capability*
+ *     bound u_z ≥ ρ₁·cosθ: with the thrust inside the tilt cone, the vertical component cannot be
+ *     lower while the magnitude is at least the floor. The mandatory surplus is spent laterally by
+ *     the command stage (`fitThrust`), which preserves u_z; the plan's vertical profile is therefore
+ *     the timed deceleration the engines can actually fly. The plan models what the old law ignored:
+ *     propellant depletion (ρ₁, ρ₂ follow the predicted mass), drag and a measured disturbance
+ *     acceleration, the thrust-vector slew the attitude loop can follow, and a thrust direction that
+ *     is upright at the gate. Controls are first-order-hold (continuous).
  *     The final time is found by a line search on the fuel of the converged solutions.
  *  2. **Tracking** (`trackDescent`, every control step): a_cmd = u_ref(t) + K_p e_p + K_d e_v.
  *     The reference carries the feed-forward; feedback only removes model error.
@@ -216,16 +219,8 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
   // optimum can sit at ‖u‖ < ρ₁, which two Raptors cannot fly. So the non-convex ‖u_k‖ ≥ ρ₁ is
   // imposed through its linearisation about the previous iterate's direction n̂_k:  n̂_k·u_k ≥ ρ₁
   // (a half-space inside the feasible set, so every iterate satisfies the true constraint).
-  const nHat = new Float64Array(3 * K)
   let haveDir = false
-  if (prev) {
-    for (let k = 0; k < K; k++) {
-      resample(prev, prev.u, 3, t0 + k * h, tmp)
-      const um = Math.hypot(tmp[0], tmp[1], tmp[2])
-      if (um > 1e-3) { nHat[3 * k] = tmp[0] / um; nHat[3 * k + 1] = tmp[1] / um; nHat[3 * k + 2] = tmp[2] / um } else nHat[3 * k + 2] = 1
-    }
-    haveDir = true
-  }
+  if (prev) haveDir = true
   const passes = prev ? 2 : 5
   for (let pass = 0; pass < passes; pass++) {
     // ---- disturbance acceleration per node: gravity + observer + drag on the profile velocity
@@ -299,6 +294,15 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
       th = Math.min(80 * DEG, Math.max(th, open))
       rows.push([[iu(k, 2), Math.tan(th)]], [[iu(k, 0), 1]], [[iu(k, 1), 1]])
       cones.push({ kind: "soc", n: 3 })
+      // Thrust-floor capability: with the engines at |u| ≥ lo and the thrust inside the tilt cone,
+      // the vertical component cannot be below lo·cosθ. This is the convex consequence of the
+      // non-convex floor + cone, and it is what makes a two-Raptor descent possible: the plan must
+      // ask for enough vertical thrust that the mandatory surplus fits inside the tilt cone. Without
+      // it the plan asked u_z ≈ 4 m/s² (a gentle descent) while the floor was 15: the command stage
+      // could only add 5 m/s² of lateral thrust before hitting the cone, so the real vertical thrust
+      // was 9–12 m/s² and the ship missed by >100 m vertically and 200 m laterally.
+      rows.push([[iu(k, 2), 1]])
+      cones.push({ kind: "box", n: 1, lo: Float64Array.of(lo[k] * Math.cos(th)), hi: Float64Array.of(hi[k]) })
     }
     // (5) attitude dynamics: horizontal slew rate and slew acceleration, throttle slew on the vertical
     const zr = new Float64Array(K - 1).fill(rateZ * h), zl = new Float64Array(K - 1).fill(-rateZ * h)
@@ -349,18 +353,6 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
         rows.push(Array.from({ length: K }, (_, k) => [iu(k, 1), sc * Cp[j * K + k]] as const))
         cones.push({ kind: "ball", n: 2, r: sc * (pr.corridor.r0 + pr.corridor.rate * left), shift: Float64Array.of(sc * (cP[3 * j] - pr.pf.x), sc * (cP[3 * j + 1] - pr.pf.y)) })
       }
-    }
-    // (7) thrust floor: the engines cannot throttle below 40 %. The magnitude constraint |u| ≥ ρ₁ is
-    // non-convex; it is imposed through its half-space linearisation about the previous iterate's
-    // direction (n̂·u ≥ ρ₁). With it the plan is a *timed* descent (there is no hover), which is the
-    // only vertical profile two Raptors can fly.
-    if (haveDir) {
-      const flo = new Float64Array(K), fhi = new Float64Array(K).fill(1e9)
-      for (let k = 0; k < K; k++) {
-        rows.push([[iu(k, 0), nHat[3 * k]], [iu(k, 1), nHat[3 * k + 1]], [iu(k, 2), nHat[3 * k + 2]]])
-        flo[k] = lo[k]
-      }
-      cones.push({ kind: "box", n: K, lo: flo, hi: fhi })
     }
     // ---- objective: fuel ∫Γ dt (trapezoid) + smoothness + continuity with the realised thrust
     const P = new Float64Array(n * n), q = new Float64Array(n)
@@ -428,11 +420,6 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
       if (um > 1e-3) { xGuess[3 * k] = u[3 * k] / um; xGuess[3 * k + 1] = u[3 * k + 1] / um; xGuess[3 * k + 2] = u[3 * k + 2] / um }
     }
     const hadDir = haveDir
-    for (let k = 0; k < K; k++) {
-      const um = Math.hypot(u[3 * k], u[3 * k + 1], u[3 * k + 2])
-      if (um > 0.05 * lo[k]) { nHat[3 * k] = u[3 * k] / um; nHat[3 * k + 1] = u[3 * k + 1] / um; nHat[3 * k + 2] = u[3 * k + 2] / um }
-      else if (!haveDir) { nHat[3 * k] = 0; nHat[3 * k + 1] = 0; nHat[3 * k + 2] = 1 }
-    }
     haveDir = true
     if (!sol.converged) break
     if (hadDir && pass >= 1 && slackMax <= 0.01 * lo[0]) break
@@ -536,7 +523,15 @@ export const trackDescent = (pl: DescentPlan, t: number, p: V3, v: V3, g: TrackG
  * tilting further along its own horizontal direction (never by adding vertical thrust).
  */
 export const fitThrust = (u: V3, lo: number, hi: number, tanTilt: number): V3 => {
-  const uz = clamp(u.z, 0.3 * lo, hi)
+  // Reserve a slice of the ceiling for the lateral channel. If the vertical demand saturates the
+  // total thrust, hMax = sqrt(hi² − uz²) = 0 and the horizontal command is deleted: measured at the
+  // catch, a 20 m/s sink at 28 m produced u_z > hi, the lateral braking went to zero and the ship
+  // crossed the rail plane 41 m off at 10 m/s. The vertical demand is a short-term transient; the
+  // lateral error is what the catch cannot tolerate, so the ceiling is shared.
+  // A set that can throttle below the weight (lo < g) descends by throttling: its vertical command
+  // never needs to go below the floor, so no surplus has to be dumped sideways. For a set that
+  // cannot (lo > g) the vertical component may go below the floor and the rest is spent laterally.
+  const uz = clamp(u.z, lo < 0.95 * G_DESCENT ? Math.min(lo, 0.85 * hi) : 0.3 * lo, 0.85 * hi)
   let hx = u.x, hy = u.y
   const hMax = Math.min(tanTilt * uz, Math.sqrt(Math.max(0, hi * hi - uz * uz)))
   const hn = Math.hypot(hx, hy)

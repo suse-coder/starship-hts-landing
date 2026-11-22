@@ -234,7 +234,7 @@ export const allocateGimbal = (engines: readonly Engine[], thrusts: readonly num
  * real vehicle), so there is no weak axis. Minimum-norm solution s = Aᵀ(AAᵀ)⁻¹(τ − b), clipped to the
  * gimbal limit. With one engine it falls back to the roll-priority projection (allocateGimbal).
  */
-export const allocateGimbals = (engines: readonly Engine[], thrusts: readonly number[], xcg: number, tau: V3, rollCap = Infinity): { gp: number[]; gy: number[] } => {
+export const allocateGimbals = (engines: readonly Engine[], thrusts: readonly number[], xcg: number, tau: V3, rollCap = Infinity, rollFirst = false): { gp: number[]; gy: number[] } => {
   const idx = engines.map((_, i) => i).filter((i) => engines[i].kind === "SL" && (thrusts[i] ?? 0) > 1e3)
   const gp = engines.map(() => 0), gy = engines.map(() => 0)
   if (idx.length === 0) return { gp, gy }
@@ -294,17 +294,32 @@ export const allocateGimbals = (engines: readonly Engine[], thrusts: readonly nu
     })
     solve([0, tau.y - bz, tau.z + by], pPY, yPY)
     solve([tau.x, 0, 0], pR, yR)
-    // 1) pitch/yaw: uniform scale into the box (keeps the torque direction)
-    let a = 1
-    idx.forEach((_, k) => { a = Math.min(a, sm / Math.max(Math.abs(pPY[k]), 1e-12), sm / Math.max(Math.abs(yPY[k]), 1e-12)) })
-    // 2) roll: the largest β ∈ [0, 1] that keeps every component inside the box
-    let b = 1
+    // Priority. Normally pointing first, roll with what is left: during the braking attitude slew the
+    // gimbal box is saturated by pitch/yaw and roll would get nothing — but roll is what the single
+    // engine cannot control afterwards, so in the last seconds before the hand-over `rollFirst`
+    // spends the box on roll and gives pitch/yaw the remainder.
+    let a = 1, b = 1
     const fit = (base: number, r: number): void => {
       if (Math.abs(r) < 1e-12) return
       const hi = ((r > 0 ? sm : -sm) - base) / r
       b = Math.min(b, Math.max(0, hi))
     }
-    idx.forEach((_, k) => { fit(a * pPY[k], pR[k]); fit(a * yPY[k], yR[k]) })
+    if (rollFirst) {
+      // roll: the largest β that fits, then pitch/yaw scaled into the remaining box
+      idx.forEach((_, k) => {
+        if (Math.abs(pR[k]) > 1e-12) b = Math.min(b, sm / Math.abs(pR[k]))
+        if (Math.abs(yR[k]) > 1e-12) b = Math.min(b, sm / Math.abs(yR[k]))
+      })
+      idx.forEach((_, k) => {
+        const room = (v: number, base: number): number => (Math.abs(v) < 1e-12 ? 1 : (Math.sign(v) * sm - base) / v)
+        a = Math.min(a, Math.max(0, room(pPY[k], b * pR[k])), Math.max(0, room(yPY[k], b * yR[k])))
+      })
+    } else {
+      // 1) pitch/yaw: uniform scale into the box (keeps the torque direction)
+      idx.forEach((_, k) => { a = Math.min(a, sm / Math.max(Math.abs(pPY[k]), 1e-12), sm / Math.max(Math.abs(yPY[k]), 1e-12)) })
+      // 2) roll: the largest β ∈ [0, 1] that keeps every component inside the box
+      idx.forEach((_, k) => { fit(a * pPY[k], pR[k]); fit(a * yPY[k], yR[k]) })
+    }
     idx.forEach((_, k) => { sp[k] = a * pPY[k] + b * pR[k]; sy[k] = a * yPY[k] + b * yR[k] })
   }
   idx.forEach((i, k) => {

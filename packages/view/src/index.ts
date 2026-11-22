@@ -360,8 +360,10 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     if (explodeTarget === 0 && explode < 0.002 && Math.abs(explodeVel) < 0.01) { explode = 0; explodeVel = 0 }
     const alt = v("alt", i, f)
     ship.update({
-      heat, thrust: [v("T1", i, f), v("T2", i, f), v("T3", i, f)], gp: v("gp", i, f), gy: v("gy", i, f),
+      heat, thrust: [v("T1", i, f), v("T2", i, f), v("T3", i, f)],
+      gp: [v("gp1", i, f), v("gp2", i, f), v("gp3", i, f)], gy: [v("gy1", i, f), v("gy2", i, f), v("gy3", i, f)],
       rcsDuty: Array.from({ length: 12 }, (_, m) => v(`r${m}` as ChannelKey, i, f)),
+      flapDep: v("flapDep", i, f), flapD: [v("flapD1", i, f), v("flapD2", i, f)],
       coilFrac: Math.min(1, Math.abs(v("coilI", i, f)) / 2600), electrodes: Array.from({ length: 8 }, (_, m) => v(`u${m}` as ChannelKey, i, f)),
       qStag: v("qStag", i, f), ne: v("ne", i, f), t0: v("T0", i, f), standoff: v("standoff", i, f), standoff0: v("standoff0", i, f), heatFactor: Math.min(1, Math.max(0.05, v("heatFactor", i, f) || 1)),
       mach: v("mach", i, f), qbar: v("qbar", i, f), vAirBody: vb, exploded: explode, studio: !physicalSky, thermalMode,
@@ -379,7 +381,7 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     coast.setFade(coastK)
     pad.root.position.copy(enu(-pe, -pn, -pu))
     coast.root.position.copy(pad.root.position)
-    pad.setArms(v("arms", i, f))
+    pad.setArms(v("arms", i, f), v("armX", i, f))
     // Earth in the local frame: three ← ENU ← ECI ← ECEF(θ) ← geometry
     const th = v("theta", i, f)
     const eciFromEcef = new THREE.Matrix4().makeRotationZ(th)

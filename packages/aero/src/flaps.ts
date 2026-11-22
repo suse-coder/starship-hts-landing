@@ -95,7 +95,10 @@ export const aftFlapWrench = (set: AftFlapSet | null, state: AftFlapState, inp: 
     const phi = set.azimuths[k]
     const c = Math.cos(phi)
     const s = Math.sin(phi)
-    // radial neutral normal and circumferential hinge tangent
+    // radial neutral normal and circumferential hinge tangent. NOTE (2026-11-22): this hinge makes
+    // pitch/drag only — a differential pair produces exactly zero roll (measured: 1.3 MN·m of pitch
+    // at the belly flop, M_x = 0). An axial hinge gives roll (159 kN·m at 7 kPa) but loses the pitch
+    // authority the CP-margin study relies on, so a bank-capable flap needs a second axis.
     const n0 = v3(0, c, s)
     const hinge = v3(0, -s, c)
     const delta = clamp(state.deflections[k] ?? 0, -set.maxDeflection, set.maxDeflection)

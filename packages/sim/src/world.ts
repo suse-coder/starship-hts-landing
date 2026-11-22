@@ -30,6 +30,8 @@ export interface World {
   readonly padEcef: V3
   readonly padEnu: Enu
   readonly wind: WindParams
+  /** prediction world: no thermal integration (the rollouts only need the trajectory) */
+  readonly lite?: boolean
 }
 
 export const TRANSITION = { vLoft: 6000, qPitch: 9000, vPitchMax: 3800 } as const

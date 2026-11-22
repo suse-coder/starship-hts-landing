@@ -1,19 +1,21 @@
 # Ship 42 — flapless Starship return and catch simulation
 
-> ## ⚠️ WORK IN PROGRESS — the catch is not yet achieved; do not treat as flight-ready
+> ## ⚠️ WORK IN PROGRESS — no flaps, cold gas until the 200 m ring, caught in still air
 >
-> The current simulation ends `lost`. There is **no true `caught` outcome** in the tree: the catch
-> gate requires the chopsticks to be **closed** (`armsClose`) with a real pin load, and every current
-> integrated run misses that gate. The earlier `CAUGHT` line was a **false catch** (arms open, 12.8 m
-> off-centre) and is retracted.
+> **Design decision (2026-11-22):** the ship flies **without flaps**. The cold-gas RCS is the attitude
+> actuator from the deorbit flip until the ship is inside the **200 m radius above the tower**
+> (`CATCH_RADIUS` in `packages/gnc/src/guidance.ts`); inside that radius everything is on the Raptors.
+> The flap model and its wiring remain in the tree but are not flown (`FLIGHT_DESIGN`).
 >
-> **This public repository/Pages site is a WIP snapshot (user-approved 2026-11-21). A successful
-> mission release is still blocked until M3 (true catch), the TPS limits and T‑mc are closed.** See
-> [docs/03-spec/11-release.md](docs/03-spec/11-release.md) and the
-> [current status in the roadmap](docs/02-plan/00-roadmap.md#current-status--2026-11-21).
+> The recorded no-wind mission **catches**: flip complete 363 m above the rails, 111 m off; arms
+> close at 26 m; both pins bear on the rails at 0.85 m/s, offset **3.03 m**, with **7.3 t** of landing
+> propellant left. Nitrogen: 5000 → 3123 kg over the whole mission (coast 213 kg, high-α 949 kg,
+> belly 415 kg, landing ≈300 kg).
+>
+> The windy case is still open, as are the TPS bondline and T‑mc.
 
-**Live WIP site:** <https://suse-coder.github.io/starship-hts-landing/> — the deployed run currently
-ends `LOST` and the TPS badge reports outside limits. It is a WIP snapshot, not a successful mission.
+**Live WIP site:** <https://suse-coder.github.io/starship-hts-landing/> — it plays the committed
+recording, which is now the **`lost`** run without cold gas.
 
 This is a research and engineering simulation project, not SpaceX software and not a flight-proven
 vehicle. It exists to answer one question honestly: **can a Starship-derived vehicle with no flaps
@@ -38,23 +40,23 @@ faked `caught`.
 
 ## Current status at a glance
 
-| Item | State (2026-11-21) |
+| Item | State (2026-11-22) |
 |---|---|
-| M3 — flip, landing, terminal, catch | **OPEN — no true catch** |
-| Latest no-flap belly-first run (active sequence, 2026-11-21) | `lost`: **5150 m** off, **68.3 m/s**, roll 60°, arms open. Tile **1671 K** (under the 1673 K SpaceX claim), bondline **678 K** (over 560 K), steel 285–363 K |
-| Latest lateral-field law (MPC worker, 2026-11-21) | `lost`: **37.5 m** off at the rail plane, 29.2 m/s, body **73°** off E–W; the direction gate rejects the southward arrival |
-| Recorded integrated mission (14:08 log) | `lost`: pins at the rail plane, 11 m off, climbing 3.0 m/s |
-| Best full-6-DOF optimiser candidate | `lost`: 6.8 m lateral, 11.7 m/s contact (bench/02) |
-| TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K (**+23 K**, best run); 1684 K is −11 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
+| M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps, cold gas until the 200 m ring); windy case open |
+| Recorded no-wind mission (committed `recording.bin`) | **`caught`**: pins on the closed arms at 0.85 m/s, offset **3.03 m**, 7.3 t left; no flaps, cold gas until the 200 m ring |
+| Windy design (default wind scale) | `lost`: delivery ≈ 550–700 m off, descent runs out of propellant ≈ 5 m above the rails |
+| Delivery method | belly plan chosen by 6-DOF rollouts to the flip-complete state (defect-corrected aim), then a single-engine velocity-field descent |
+| TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
 | T‑mc (20-run wind/κ/B/mass ensemble) | **not run** |
 | Typecheck | clean (`bun run typecheck`) |
-| Tests | 238 pass, 2 todo, 0 fail across 22 files (`bun test packages`) |
+| Tests | 324 pass, 2 todo, 0 fail across 30 files (`bun test packages`) |
+| Full mission cost | ≈ 22–28 s wall for the whole 2900 s mission including 20 onboard prediction rollouts |
 
 The numbers above come from the evidence logs named in the roadmap; they are measured or simulated
 values, not targets. The 3D view, the browser tree, the catch-tower contact model, the arm timing,
 the approach-direction gates and the rendering features (global clouds, predicted-path overlay,
-right-mouse pan, altitude graph) are implemented and verified as described in the roadmap — **none
-of that closes M3.**
+right-mouse pan, altitude graph) are implemented and verified as described in the roadmap. The
+no-wind catch is a genuine end-to-end result; the all-weather release is not.
 
 ## Architecture
 
@@ -125,10 +127,23 @@ and starving the OpenCode server restarts it.
 - **Propulsion:** Raptor 3 sea-level and vacuum models with spool, throttle, Isp and gimbal limits;
   cold-gas RCS with finite N₂ and COPV mass; differential gimbal roll.
 - **Guidance:** 3-DOF predictor-corrector entry with a planned bank reversal, lift-transport belly-flop
-  laws, a lag-aware landing MPC, and a terminal deceleration to the rails. After the flip the only
-  actuators are **two sea-level Raptors** (no cold gas, coil discharged).
-- **Catch hardware:** Mechazilla column, carriage, arms, rails and pins with solid contact and Coulomb
-  friction. A catch requires the arms to be closed and both pins to settle on the rails.
+  laws, a lag-aware landing MPC, and a terminal deceleration to the rails. The belly plan is chosen
+  and corrected by **onboard 6-DOF rollouts** (the vehicle model, forecast wind, no turbulence, no
+  knowledge of future failures) to the flip-complete state; the post-flip descent is a velocity-field
+  law whose sink is coupled to the time the lateral correction needs. After the flip the actuators are
+  the **sea-level Raptors** (one engine from flip completion) plus the cold-gas couples for roll only —
+  a deliberate deviation from "Raptors only", because one off-centre gimbal cannot hold roll.
+- **Catch hardware:** Mechazilla column, carriage, V-shaped chopstick arms (44 m long, inner faces
+  flared 2 m outward over their 2.8 m depth so the ship's aft section passes between them), rails and
+  pins with solid contact and Coulomb friction. A catch requires the arms to be closed and both pins
+  to settle on the rails.
+- **Known limit (terminal lateral authority):** one gimballed Raptor at the throttle floor gives
+  ≈ 1–2 m/s² of lateral acceleration in the last 30 m. A zero-effort-miss (ZEM/ZEV) descent law was
+  implemented and measured: it keeps the along-track motion (no stop-and-reverse) and closes 380 m to
+  ≈ 20 m, but it cannot finish inside that authority, so the flown law remains the position/velocity
+  law that closes the last metres. The belly plan's delivery (≈ 380–490 m at flip completion) is what
+  the terminal has to absorb; the flip also translates the ship by ≈ v_h·4.5 s after ignition, which
+  the point-mass belly model omits.
 
 ## Documentation
 

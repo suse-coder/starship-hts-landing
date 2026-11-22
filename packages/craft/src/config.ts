@@ -225,6 +225,20 @@ export const DEFAULT_DESIGN: DesignParams = {
   // open-base gimballed-bell fins: flown from this revision (engines cold, no propellant)
   bellFins: { enabled: true, area: 1.33, wakeFactor: 0.45, baseDragFactor: 0.8, baseHeatFraction: 0.06, ductFactor: 1.0, ductMass: 110 },
 }
+/**
+ * The design that is actually flown (user decision 2026-11-22): `DEFAULT_DESIGN` plus two 7.2 m²
+ * aft steering flaps. They are deployed at coil-authority loss and deflected differentially as the
+ * bank actuator when the coil can no longer steer. `DEFAULT_DESIGN` stays the baseline (no flaps)
+ * so the mass/trim studies and their tests are unchanged; the app, the snapshot and the lab fly
+ * this one.
+ */
+export const FLIGHT_DESIGN: DesignParams = {
+  ...DEFAULT_DESIGN,
+  // No flaps (user decision 2026-11-22): the cold-gas RCS flies the ship until it is inside the
+  // 200 m radius above the tower, then everything is on the Raptors. The flap model and its wiring
+  // stay in the tree (`{ ...DEFAULT_AFT_FLAPS, enabled: true, count: 2 }`) but are not flown.
+}
+
 
 /** Inertia primitive for the mass model. */
 export type Body =

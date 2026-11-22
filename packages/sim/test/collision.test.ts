@@ -56,7 +56,7 @@ describe("tower collision through step", () => {
     const q = qFromBasis(padU, padE, padN) // body +x up, +y east over the two rails
     let s: SimState = {
       ...s0, t: 0, r, v: corotation(r), q, w: v3(0, 0, 0),
-      arms: { open: 0, cmdClose: true },
+      arms: { open: 0, cmdClose: true, cx: 0 },
       mem: { ...s0.mem, phase: "caught", armsClose: true, caughtT: 0, reason: "" },
     }
     let maxBody = 0

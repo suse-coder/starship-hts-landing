@@ -4,19 +4,26 @@ Status legend: `[x]` done and verified · `[~]` in progress / implemented but no
 verified · `[ ]` open. Every `[x]` names its evidence (test, script, screenshot or journal entry).
 The roadmap is checked and updated at the end of every work session (user, 2026-11-21).
 
-## Current status — 2026-11-21
+## Current status — 2026-11-22
 
-**The catch is not achieved. M3 is open. M8 is blocked.** No run in the current tree ends `caught`.
-The catch condition requires the chopsticks to be **closed** (`armsClose`) with a real pin load;
-the earlier `CAUGHT` was a false catch (arms open, 12.8 m off) and is retracted.
+**The catch is achieved in still air; M3 is closed for the no-wind case only. M8 is still blocked.**
+
+The full closed-loop mission (`bun scripts/snapshot.ts`, no wind) now ends `caught`: the arms are
+**closed**, both pins carry the load, and the engines are cut at contact (`offset 1.83 m`,
+`0.20 m/s`, 0.5 t of landing propellant left). The earlier `CAUGHT` was a false catch (arms open,
+12.8 m off) and stays retracted.
+
+**With the default wind the mission still ends `lost`** (delivery ≈ 550–700 m off; the descent runs
+out of propellant ≈ 5 m above the rails). The all-weather release, the TPS bondline and T‑mc remain
+open.
 
 | Area | Current state | Evidence |
 |---|---|---|
-| **M3 — catch** | **OPEN — `lost`.** No true `caught`. | Active no-flap belly-first sequence (2026-11-21): **5150 m** off, 68.3 m/s, roll 60°, arms open; tile 1671 K (under 1673), bondline 678 K (over), steel 285–363 K; `lost`. Latest closed-loop lateral field: **37.5 m** off (36.0 across / 10.6 along), 29.2 m/s, body **73.3°** off E–W, southward arrival, `lost` (MPC worker, 2026-11-21). Integrated mission: 11 m off, climbing 3.0 m/s (`.tmp/mission_verify.log`). Best full-6-DOF optimiser candidate: **6.8 m lateral / 11.7 m/s**, `lost` ([bench/02](../05-benchmarks/02-optimizer.md)). Direction-gate sweeps: best 153.3 m lateral (`.tmp/review/smooth.log`); best across-arms 7.7 m but 230.6 m along (`.tmp/review/gate1500v2.log`). |
+| **M3 — catch** | **CAUGHT in still air; windy open.** | No-wind full mission: `caught`, pins on the closed arms at 0.20 m/s, offset 1.83 m, 0.5 t left; flip complete 363 m above the rails, 382 m off, 35 m/s. Windy: `lost`, delivery 550–700 m off. Tile 1650 K, bondline 695 K (over), steel 285–363 K; `lost`. Latest closed-loop lateral field: **37.5 m** off (36.0 across / 10.6 along), 29.2 m/s, body **73.3°** off E–W, southward arrival, `lost` (MPC worker, 2026-11-21). Integrated mission: 11 m off, climbing 3.0 m/s (`.tmp/mission_verify.log`). Best full-6-DOF optimiser candidate: **6.8 m lateral / 11.7 m/s**, `lost` ([bench/02](../05-benchmarks/02-optimizer.md)). Direction-gate sweeps: best 153.3 m lateral (`.tmp/review/smooth.log`); best across-arms 7.7 m but 230.6 m along (`.tmp/review/gate1500v2.log`). |
 | **TPS** | **Over the LI-900 limits.** | Latest sweeps: tile **1650 K** vs 1530 K, bondline **695 K** vs 560 K, backing 363 K (pass); `.tmp/review/gate150*.log`, `smooth.log`. Integrated run: tile 1684 K, bondline 701 K (`.tmp/mission_verify.log`). The sourced SpaceX tile claim is 1673 K; the design uses the conservative LI-900 1530 K limit. |
 | **T‑mc** | **Not run.** | No Monte Carlo ensemble exists; a nominal catch would not close T09 anyway. |
 | **Typecheck** | Clean. | `bun run typecheck`, 2026-11-21. |
-| **Tests** | 238 pass, 2 todo, 0 fail, 22 files. | `bun test packages`, 2026-11-21. The two todos are the stale aero subsonic-trim and belly-flop terminal-velocity numbers. |
+| **Tests** | 324 pass, 2 todo, 0 fail, 30 files. | `bun test packages`, 2026-11-22. The two todos are the stale aero subsonic-trim and belly-flop terminal-velocity numbers. |
 | **Tower collision** | Done and tested. | `packages/tower/src/tower.ts` `towerContact`; `packages/sim/src/step.ts` enables contact in every phase within 260 m altitude / 300 m of the pad; `packages/tower/test/tower.test.ts` 11 pass (column push-out, arm-top support, closing-arm squeeze, pin friction). |
 | **Arm timing** | Done. | `guidance.ts`: closes on time-to-rails with `armCloseLead = 3.7 s`, predicted closure position and the tuning's lateral/along limits; review/02 §5. Not yet exercised by a successful catch. |
 | **Direction gates** | Done. | `landing.ts` `pRefH = [0, −12]` (south gate); terminal requires `y < 5` and `v_y > −0.5`; catch requires `v_y > 0` and `abs(v_x) < 0.8`; review/02 §"Direction gates". The gates reject wrong arrivals; they did not produce a catch. |

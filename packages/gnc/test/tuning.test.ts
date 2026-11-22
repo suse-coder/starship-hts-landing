@@ -13,10 +13,10 @@ describe("MissionTuning defaults", () => {
   test("reproduce the flown constants", () => {
     const T = MISSION_TUNING_DEFAULT
     expect(T.aimEntry).toBe(180e3)
-    expect(T.aimHigh).toBe(900)
+    expect(T.aimHigh).toBe(900) // still air: the no-wind delivery is tuned here
     expect(T.bellyPlanEnd).toBe(1300) // the flip fall + the two-engine stop distance
     expect(T.bellyBankRateDeg).toBe(1.8)
-    expect(T.gateMiss).toBe(630)
+    expect(T.gateMiss).toBe(420)
     expect(T.gateClosing).toBe(35)
     expect(T.gateLat).toBe(4.5)
     expect(T.flipDv).toBe(35)
@@ -58,7 +58,7 @@ describe("MissionTuning validation", () => {
     const T = MISSION_TUNING_DEFAULT.with({ gateMiss: 900, landingWn: 2.4 })
     expect(T.gateMiss).toBe(900)
     expect(T.landingWn).toBe(2.4)
-    expect(MISSION_TUNING_DEFAULT.gateMiss).toBe(630) // immutable
+    expect(MISSION_TUNING_DEFAULT.gateMiss).toBe(420) // immutable
   })
 
   test("rejects unknown fields, non-finite values and out-of-range values", () => {

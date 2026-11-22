@@ -48,7 +48,15 @@ export interface TuningValues {
   readonly flipFall: number
   // ---- landing burn (flip → pins) ----
   readonly landingEngines: number
+  readonly terminalEngines: number
+  readonly finalWn: number
+  readonly finalWMaxDeg: number
+  readonly finalAxisAccel: number
+  readonly hoverKp: number
+  readonly hoverKd: number
   readonly contactSpeed: number
+  readonly landKp: number
+  readonly landKd: number
   readonly landingWn: number
   readonly landingZeta: number
   readonly landingWMaxDeg: number
@@ -120,7 +128,7 @@ const D = Math.PI / 180
  */
 export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "aimEntry", kind: "number", min: 0, max: 400e3, default: 180e3, unit: "m", group: "entry", description: "Entry predictor–corrector downrange bias past the pad." },
-  { key: "aimHigh", kind: "number", min: 0, max: 5e3, default: 900, unit: "m", group: "entry", description: "High-α hand-over downrange bias past the pad (the belly-flop aim)." },
+  { key: "aimHigh", kind: "number", min: 0, max: 5e3, default: 900, unit: "m", group: "entry", description: "High-α hand-over aim short of the pad (m). Measured: 900 m put the flip 1.1 km off; 300 m puts it 260 m off with room to brake the flip kick." },
   { key: "glideZeta", kind: "number", min: 0.05, max: 2, default: 0.3, unit: "", group: "entry", description: "High-α altitude-rate damping ratio of the phugoid law." },
   { key: "dvBurn", kind: "number", min: 80, max: 140, default: 108, unit: "m/s", group: "deorbit", description: "Deorbit retrograde Δv target (entry energy)." },
   { key: "bellyPlanEnd", kind: "number", min: 300, max: 3000, default: 1300, unit: "m", group: "belly", description: "Belly-flop plan end above the catch plane; deliberately decoupled from the flip gate." },
@@ -128,13 +136,21 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "bellyAlignH", kind: "number", min: 300, max: 3000, default: 1800, unit: "m", group: "belly", description: "Altitude window above the flip in which the nose snaps to the N/S catch quadrant." },
   { key: "bellyAimE", kind: "number", min: -800, max: 800, default: 0, unit: "m", group: "belly", description: "Belly-flop plan aim offset east of the catch point." },
   { key: "bellyAimN", kind: "number", min: -800, max: 800, default: 0, unit: "m", group: "belly", description: "Belly-flop plan aim offset north of the catch point." },
-  { key: "gateMiss", kind: "number", min: 100, max: 1800, default: 630, unit: "m", group: "gate", description: "Design lateral miss the flip gate is sized for (flipAltitude)." },
+  { key: "gateMiss", kind: "number", min: 100, max: 1800, default: 420, unit: "m", group: "gate", description: "Design lateral miss the flip gate is sized for (flipAltitude)." },
   { key: "gateClosing", kind: "number", min: 5, max: 80, default: 35, unit: "m/s", group: "gate", description: "Design closing speed at the flip used to size the gate." },
   { key: "gateLat", kind: "number", min: 1, max: 12, default: 4.5, unit: "m/s²", group: "gate", description: "Design lateral authority used to size the gate." },
   { key: "flipDv", kind: "number", min: 5, max: 70, default: 35, unit: "m/s", group: "gate", description: "Vertical Δv the flip rotation is assumed to spend." },
   { key: "flipFall", kind: "number", min: 2, max: 10, default: 5.9, unit: "s", group: "gate", description: "Ballistic fall time during the flip per m/s of sink." },
-  { key: "landingEngines", kind: "integer", min: 2, max: 3, default: 2, unit: "", group: "landing", description: "Sea-level Raptors from the flip to the pins (3 gives more brake/lateral authority; the final gate is faster)." },
+  { key: "landingEngines", kind: "integer", min: 1, max: 3, default: 2, unit: "", group: "landing", description: "Sea-level Raptors from the flip to the pins (3 gives more brake/lateral authority; the final gate is faster)." },
+  { key: "terminalEngines", kind: "integer", min: 1, max: 3, default: 1, unit: "", group: "landing", description: "Engines of the final approach; staged to when a plan on them is feasible (1: throttleable through the weight)." },
+  { key: "finalWn", kind: "number", min: 0.3, max: 1.5, default: 0.8, unit: "rad/s", group: "landing", description: "Single-engine attitude loop natural frequency (one gimbal: ≈ 0.2 rad/s², 20°/s slew)." },
+  { key: "finalWMaxDeg", kind: "number", min: 4, max: 24, default: 14, unit: "deg/s", group: "landing", description: "Single-engine attitude rate limit." },
+  { key: "finalAxisAccel", kind: "number", min: 0.03, max: 0.3, default: 0.14, unit: "rad/s²", group: "landing", description: "Single-engine pitch/yaw braking acceleration assumed by the rate profile." },
+  { key: "hoverKp", kind: "number", min: 0.01, max: 0.4, default: 0.05, unit: "1/s²", group: "landing", description: "Hold-until-centred lateral position gain above the rails (must sit below the attitude loop)." },
+  { key: "hoverKd", kind: "number", min: 0.1, max: 2, default: 0.6, unit: "1/s", group: "landing", description: "Hold-until-centred lateral velocity gain." },
   { key: "contactSpeed", kind: "number", min: 0.2, max: 1.2, default: 0.7, unit: "m/s", group: "landing", description: "Design contact speed at the pins." },
+  { key: "landKp", kind: "number", min: 0, max: 2, default: 0.3, unit: "1/s²", group: "landing", description: "Landing tracker position gain." },
+  { key: "landKd", kind: "number", min: 0, max: 4, default: 1.0, unit: "1/s", group: "landing", description: "Landing tracker velocity gain." },
   { key: "landingWn", kind: "number", min: 0.5, max: 4, default: 1.7, unit: "rad/s", group: "landing", description: "Landing attitude loop natural frequency (pointing)." },
   { key: "landingZeta", kind: "number", min: 0.5, max: 1.5, default: 0.9, unit: "", group: "landing", description: "Landing attitude loop damping." },
   { key: "landingWMaxDeg", kind: "number", min: 8, max: 50, default: 26, unit: "deg/s", group: "landing", description: "Landing pointing slew-rate limit." },
@@ -250,7 +266,15 @@ export class MissionTuning implements TuningValues {
   readonly flipDv: number
   readonly flipFall: number
   readonly landingEngines: number
+  readonly terminalEngines: number
+  readonly finalWn: number
+  readonly finalWMaxDeg: number
+  readonly finalAxisAccel: number
+  readonly hoverKp: number
+  readonly hoverKd: number
   readonly contactSpeed: number
+  readonly landKp: number
+  readonly landKd: number
   readonly landingWn: number
   readonly landingZeta: number
   readonly landingWMaxDeg: number
@@ -330,7 +354,15 @@ export class MissionTuning implements TuningValues {
     this.flipDv = values.flipDv
     this.flipFall = values.flipFall
     this.landingEngines = values.landingEngines
+    this.terminalEngines = values.terminalEngines
+    this.finalWn = values.finalWn
+    this.finalWMaxDeg = values.finalWMaxDeg
+    this.finalAxisAccel = values.finalAxisAccel
+    this.hoverKp = values.hoverKp
+    this.hoverKd = values.hoverKd
     this.contactSpeed = values.contactSpeed
+    this.landKp = values.landKp
+    this.landKd = values.landKd
     this.landingWn = values.landingWn
     this.landingZeta = values.landingZeta
     this.landingWMaxDeg = values.landingWMaxDeg

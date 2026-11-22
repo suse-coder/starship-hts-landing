@@ -31,7 +31,7 @@ export const enu = (e: number, n: number, u: number): THREE.Vector3 => new THREE
 
 export interface PadModel {
   readonly root: THREE.Group
-  readonly setArms: (open: number) => void
+  readonly setArms: (open: number, cx?: number) => void
 }
 
 // ===================================================================================== dimensions
@@ -81,17 +81,17 @@ const TIP_N = TOWER.pos.y - 2 - TOWER.armLength
 /** actuator axis (n) */
 const ACT_N = ROOT_N + 0.7
 /**
- * Chopstick truss beyond [T]: depth = armDepth (2.8 m) over the catch zone (n ≤ 6 m), haunched to
- * 4.6 m at the root and tapered to 2.0 m at the tip. The cross-section is a **V**: two top chords
+ * Chopstick truss beyond [T]: the real wedge — 4.6 m deep at the carriage, ~1 m at the tip, with the
+ * track horizontal on top and the underside rising. The cross-section is a **V**: two top chords
  * under the rail and one lower spine, with V webs and Warren diagonals in the two inclined planes.
  * The old visual was a four-chord rectangular box; it read as a box girder rather than Mechazilla.
  */
 const ARM = {
-  rootDepth: 4.6,
+  /** the real chopsticks are a wedge: 4.6 m deep at the carriage, ~1 m at the tip, top horizontal */
+  rootDepth: TOWER.armRootDepth,
   haunchN: 6,
-  /** depth taper begins here and reaches tipDepth at TIP_N */
   tipN: -7,
-  tipDepth: 2.0,
+  tipDepth: TOWER.armTipDepth,
   /** top chord centres inside the 1.6 m rail width; the inner face itself is the bumper line at o = 0 */
   topIn: 0.24,
   topOut: TOWER.armWidth - 0.3,
@@ -736,11 +736,10 @@ const carriage = (): Member[] => {
   return out
 }
 
-/** bottom of the arm truss at station n: armDepth over the catch zone, haunched to the root, tapered to the tip */
+/** bottom of the arm truss at station n: a straight wedge from `rootDepth` to `tipDepth` (the real shape) */
 const armBottom = (n: number): number => {
-  const haunch = n > ARM.haunchN ? ((n - ARM.haunchN) / (ROOT_N - ARM.haunchN)) * (ARM.rootDepth - TOWER.armDepth) : 0
-  const taper = n < ARM.tipN ? ((ARM.tipN - n) / (ARM.tipN - TIP_N)) * (TOWER.armDepth - ARM.tipDepth) : 0
-  return TOWER.armHeight - TOWER.armDepth - haunch + taper
+  const f = Math.min(1, Math.max(0, (n - TIP_N) / (ROOT_N - TIP_N)))
+  return TOWER.armHeight - (ARM.tipDepth + (ARM.rootDepth - ARM.tipDepth) * f)
 }
 
 /** outer top chord offset at station n (narrows over the last 10 m toward the tip) */
@@ -750,7 +749,7 @@ const armOut = (n: number): number =>
 /**
  * One chopstick (s = −1 west, +1 east) in its group frame (group x = inner face, e = s·o with o the
  * outward offset). Top of the rail = TOWER.armHeight, inner face (bumpers) at o = 0, width
- * TOWER.armWidth, depth TOWER.armDepth over the catch zone, tip at the contact model's yMin [T].
+ * TOWER.armWidth, wedge depth from `armRootDepth` to `armTipDepth`, tip at the contact model's yMin [T].
  *
  * The truss cross-section is a V: two top chords under the track and one lower spine, joined by V
  * webs at every panel point and Warren diagonals in the two inclined side planes. It haunches to
@@ -776,7 +775,12 @@ const armMembers = (s: 1 | -1): Member[] => {
   // ---- V truss
   const n0 = ROOT_N - 3, nEnd = TIP_N + 0.5
   const bot = (n: number): number => armBottom(n) + 0.2
-  const mid = (n: number): number => (ARM.topIn + armOut(n)) / 2
+  // The inner face leans outward with depth (TOWER.armFlare at the root depth): the rails that
+  // carry the pins are the narrowest point and the truss opens downward, so the ship's aft section
+  // passes between the arms. The spine and the inner web follow the flare; the rail top and the
+  // bumper pads stay at o = 0, which is the envelope the contact model uses.
+  const flare = (n: number): number => TOWER.armFlare * Math.min(1, (TOWER.armHeight - armBottom(n)) / TOWER.armRootDepth)
+  const mid = (n: number): number => (ARM.topIn + armOut(n)) / 2 + flare(n)
   // top chords under the track (the outer chord angles in over the tip taper)
   out.push(bar("arm", at(ARM.topIn, n0, uT), at(ARM.topIn, TIP_N, uT), 0.38))
   out.push(bar("arm", at(ARM.topOut, n0, uT), at(ARM.topOut, ARM.tipN, uT), 0.38))
@@ -822,7 +826,7 @@ const armMembers = (s: 1 | -1): Member[] => {
   // inner bumper/rub faces over the catch zone (the pads define the inner face at o = 0 exactly)
   for (let k = 0; k < 9; k++) {
     const nc = 7 - k * 2.4
-    out.push(ab("yellow", 0, 0.16, nc - 0.85, nc + 0.85, top - 1.35, top - 0.1))
+    out.push(ab("yellow", 0, 0.16, nc - 0.85, nc + 0.85, top - 1.1, top - 0.1))
   }
   out.push(ab("rail", 0.02, 0.1, TIP_N + 1.2, ARM.haunchN + 1.5, top - 1.32, top - 1.16))
   // open V tip frame: the two top chords, the spine node and two V legs (no full-depth end plate that
@@ -1177,13 +1181,15 @@ export const makePad = (): PadModel => {
     root.add(m)
     return m
   })
-  const setArms = (open: number): void => {
+  // `cx`: east offset of the arm pair's centre (the tower-side tracking of the ship, [T] ArmState.cx)
+  const setArms = (open: number, cx = 0): void => {
     const k = Math.min(1, Math.max(0, Number.isFinite(open) ? open : 1))
+    const c = Number.isFinite(cx) ? cx : 0
     const gap = TOWER.closedGap + (TOWER.openGap - TOWER.closedGap) * k
     arms.forEach((g, i) => {
       const s = i === 0 ? -1 : 1
-      g.position.set(TW.e + (s * gap) / 2, 0, 0)
-      const xb = TW.e - s * ACT.anchor + s * ACT.barrel, xl = TW.e + s * (gap / 2 + 0.8)
+      g.position.set(TW.e + c + (s * gap) / 2, 0, 0)
+      const xb = TW.e - s * ACT.anchor + s * ACT.barrel, xl = TW.e + c + s * (gap / 2 + 0.8)
       const rod = rods[i]
       rod.position.x = (xb + xl) / 2
       rod.scale.x = Math.max(0.02, Math.abs(xl - xb))

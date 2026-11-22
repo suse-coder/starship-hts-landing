@@ -26,25 +26,6 @@ const seams = (c: Ctx): THREE.Object3D => {
   return kit.build("seams")
 }
 
-/** 12 shield deck closing the six engine compartments at x 1.8 (seen from below) + aft skirt edge ring */
-const shieldDeck = (c: Ctx): THREE.Object3D => {
-  const kit = new Kit()
-  const shape = new THREE.Shape().absarc(0, 0, LAYOUT.rIn - 0.005, 0, Math.PI * 2, false)
-  // SL holes r 0.85: nozzle r 0.33 at the deck + 15° gimbal swing 0.47 m; RVac r 0.88: bell r 0.78 there
-  const holes = c.v.engines.map((e) => ({ y: e.gimbal.y, z: e.gimbal.z, r: e.kind === "SL" ? 0.85 : 0.88 }))
-  for (const h of holes) shape.holes.push(new THREE.Path().absarc(h.y, h.z, h.r, 0, Math.PI * 2, true))
-  const deck = new THREE.ExtrudeGeometry(shape, { depth: 0.04, bevelEnabled: false, curveSegments: 18 })
-  // shape (x, y) → body (y, z); extrusion z → body x
-  deck.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, LAYOUT.shieldDeck - 0.02, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1))
-  kit.add(deck, MAT.steelDarkShell)
-  // underside stiffeners between the holes (outboard of each SL hole, inboard of each RVac hole)
-  for (const e of c.v.engines) {
-    const phi = Math.atan2(e.gimbal.z, e.gimbal.y)
-    const [r0, r1] = e.kind === "SL" ? [2.2, 4.42] : [0.12, 2.26]
-    kit.add(boxGeo(0.07, r1 - r0, 0.05), MAT.steelDark, axialFrame(LAYOUT.shieldDeck - 0.055, phi, (r0 + r1) / 2))
-  }
-  return kit.build("shieldDeck")
-}
 
 /** wall of a shield can (radius rad about the engine axis) from xBot up to the bay ceiling */
 const canGeo = (cy: number, cz: number, rad: number, xBot: number, seg = 40, xMinTop = -Infinity): THREE.BufferGeometry => {
@@ -67,20 +48,6 @@ const canGeo = (cy: number, cz: number, rad: number, xBot: number, seg = 40, xMi
 
 
 
-/** 12 purge vents ×24: louvred grilles 0.40 × 0.25 on the skirt at x 2.2, φ 15° steps (local X axial, Y out, Z tangential) */
-const vents = (c: Ctx): THREE.Object3D => {
-  const kit = new Kit()
-  const s = c.hull.sOf(2.2)
-  for (let k = 0; k < 24; k++) {
-    const F = c.hull.frame(s, deg(15 * k), 0)
-    const at = (x: number, y: number, z: number, rx = 0): THREE.Matrix4 => F.clone().multiply(new THREE.Matrix4().compose(v3(x, y, z), new THREE.Quaternion().setFromAxisAngle(v3(1, 0, 0), rx), v3(1, 1, 1)))
-    kit.add(boxGeo(0.4, 0.006, 0.25), MAT.panel, at(0, 0.002, 0))
-    for (const z of [-0.1375, 0.1375]) kit.add(boxGeo(0.45, 0.014, 0.025), MAT.steelDark, at(0, 0.006, z))
-    for (const x of [-0.2125, 0.2125]) kit.add(boxGeo(0.025, 0.014, 0.25), MAT.steelDark, at(x, 0.006, 0))
-    for (const z of [-0.09, -0.03, 0.03, 0.09]) kit.add(boxGeo(0.38, 0.004, 0.052), MAT.steel, at(0, 0.012, z, deg(35)))
-  }
-  return kit.build("vents")
-}
 
 /** 13 thrust puck (forging Ø 3.6 × 0.6, x 3.6–4.2) + thrust cone + SL mounting bosses + RVac thrust pads + TVC/strut posts */
 const thrustStructure = (c: Ctx): THREE.Object3D => {
@@ -252,8 +219,6 @@ const picaCloseout = (c: Ctx): THREE.Object3D => {
 
 export const structureParts = (c: Ctx): PartSpec[] => [
   { id: "seams", label: "11 Weld seams W01–W20 + longitudinal ring seams ×21", asm: "structure", obj: seams(c), internal: false },
-  { id: "shieldDeck", label: "12 Engine-bay shield deck (open nozzle holes)", asm: "structure", obj: shieldDeck(c), internal: false },
-  { id: "vents", label: "12 Engine-bay purge vents ×24 (louvred, x 2.2)", asm: "structure", obj: vents(c), internal: false },
   { id: "puck", label: "13 Thrust puck Ø 3.6 + thrust cone + TVC posts + RVac pads", asm: "structure", obj: thrustStructure(c), internal: true, dist: 6, axial: -6 },
   { id: "aftDome", label: "13 Aft dome (LOX tank bottom, depth 3.8)", asm: "structure", obj: domeShell(LAYOUT.aftDome.apex, LAYOUT.aftDome.depth, 1, "aftDome"), internal: true, dist: 0, axial: -3 },
   {

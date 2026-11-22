@@ -173,7 +173,7 @@ describe("guidance: staged landing and roll-only RCS", () => {
     qbar: 3000, pAmb: P_AMB, alpha: 0.1, t0Stag: 0, padEci: v3(0, 0, 0), pinRel: v3(900, 200, 1100),
     velRel: v3(-30, -5, -70), hBase: 1100, hLow: 1000, mhd: null, aeroM: v3(0, 0, 0), coilI: 10, coilIop: 3000,
     seedLeft: 0, propHeader: 20_000, thrusts: [1e6, 1e6, 0], spoolDone: true, pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust: 15,
-    mhdDrag: 0, aeroF: v3(0, 0, 0), mhdF: v3(0, 0, 0), engF: v3(0, 0, 0),
+    mhdDrag: 0, aeroF: v3(0, 0, 0), mhdF: v3(0, 0, 0), engF: v3(0, 0, 0), armX: 0, arms: 1,
   })
   const memFor = (phase: "flip" | "landing" | "terminal"): Mem => ({
     ...initMem(0), phase, tPhase: 0, nEngLand: N_ENG, coilOff: true,

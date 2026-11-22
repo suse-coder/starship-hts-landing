@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1180" viewBox="0 0 1800 1180">
+<rect width="1800" height="1180" fill="#0c121a"/>
+<rect x="70" y="100" width="810" height="430" fill="#101720"/>
+<polygon points="231.5,100.0 231.5,530.0 232.5,530.0 232.5,100.0" fill="#1c2834"/>
+<polygon points="70.0,444.5 880.0,444.5 880.0,443.5 70.0,443.5" fill="#1c2834"/>
+<polygon points="393.5,100.0 393.5,530.0 394.5,530.0 394.5,100.0" fill="#1c2834"/>
+<polygon points="70.0,358.5 880.0,358.5 880.0,357.5 70.0,357.5" fill="#1c2834"/>
+<polygon points="555.5,100.0 555.5,530.0 556.5,530.0 556.5,100.0" fill="#1c2834"/>
+<polygon points="70.0,272.5 880.0,272.5 880.0,271.5 70.0,271.5" fill="#1c2834"/>
+<polygon points="717.5,100.0 717.5,530.0 718.5,530.0 718.5,100.0" fill="#1c2834"/>
+<polygon points="70.0,186.5 880.0,186.5 880.0,185.5 70.0,185.5" fill="#1c2834"/>
+<polygon points="250.6,531.2 268.6,531.2 268.6,528.8 250.6,528.8" fill="#5af096"/>
+<polygon points="258.4,521.0 258.4,530.0 260.8,530.0 260.8,521.0" fill="#5af096"/>
+<text x="70.0" y="76.0" font-family="DejaVu Sans Mono, monospace" font-size="17" font-weight="bold" fill="#d2e1eb">SIDE — belly flop to catch (north vs height)</text>
+<text x="72.0" y="116.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">height above rails (m)</text>
+<text x="72.0" y="548.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">north (m)</text>
+<text x="730.0" y="548.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">-2200 … 7200</text>
+<rect x="960" y="100" width="770" height="430" fill="#101720"/>
+<polygon points="1113.5,100.0 1113.5,530.0 1114.5,530.0 1114.5,100.0" fill="#1c2834"/>
+<polygon points="960.0,444.5 1730.0,444.5 1730.0,443.5 960.0,443.5" fill="#1c2834"/>
+<polygon points="1267.5,100.0 1267.5,530.0 1268.5,530.0 1268.5,100.0" fill="#1c2834"/>
+<polygon points="960.0,358.5 1730.0,358.5 1730.0,357.5 960.0,357.5" fill="#1c2834"/>
+<polygon points="1421.5,100.0 1421.5,530.0 1422.5,530.0 1422.5,100.0" fill="#1c2834"/>
+<polygon points="960.0,272.5 1730.0,272.5 1730.0,271.5 960.0,271.5" fill="#1c2834"/>
+<polygon points="1575.5,100.0 1575.5,530.0 1576.5,530.0 1576.5,100.0" fill="#1c2834"/>
+<polygon points="960.0,186.5 1730.0,186.5 1730.0,185.5 960.0,185.5" fill="#1c2834"/>
+<polygon points="1336.0,531.2 1354.0,531.2 1354.0,528.8 1336.0,528.8" fill="#5af096"/>
+<polygon points="1343.8,521.0 1343.8,530.0 1346.2,530.0 1346.2,521.0" fill="#5af096"/>
+<text x="960.0" y="76.0" font-family="DejaVu Sans Mono, monospace" font-size="17" font-weight="bold" fill="#d2e1eb">SIDE — last 600 m (dashed = guidance plan)</text>
+<text x="962.0" y="116.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">height above rails (m)</text>
+<text x="962.0" y="548.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">north (m)</text>
+<text x="1580.0" y="548.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">-420 … 420</text>
+<rect x="70" y="660" width="810" height="430" fill="#101720"/>
+<polygon points="231.5,660.0 231.5,1090.0 232.5,1090.0 232.5,660.0" fill="#1c2834"/>
+<polygon points="70.0,1004.5 880.0,1004.5 880.0,1003.5 70.0,1003.5" fill="#1c2834"/>
+<polygon points="393.5,660.0 393.5,1090.0 394.5,1090.0 394.5,660.0" fill="#1c2834"/>
+<polygon points="70.0,918.5 880.0,918.5 880.0,917.5 70.0,917.5" fill="#1c2834"/>
+<polygon points="555.5,660.0 555.5,1090.0 556.5,1090.0 556.5,660.0" fill="#1c2834"/>
+<polygon points="70.0,832.5 880.0,832.5 880.0,831.5 70.0,831.5" fill="#1c2834"/>
+<polygon points="717.5,660.0 717.5,1090.0 718.5,1090.0 718.5,660.0" fill="#1c2834"/>
+<polygon points="70.0,746.5 880.0,746.5 880.0,745.5 70.0,745.5" fill="#1c2834"/>
+<polygon points="466.0,876.2 484.0,876.2 484.0,873.8 466.0,873.8" fill="#5af096"/>
+<polygon points="473.8,866.0 473.8,884.0 476.2,884.0 476.2,866.0" fill="#5af096"/>
+<text x="70.0" y="636.0" font-family="DejaVu Sans Mono, monospace" font-size="17" font-weight="bold" fill="#d2e1eb">PLAN — terminal ground track</text>
+<text x="72.0" y="676.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">north (m)</text>
+<text x="72.0" y="1108.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">east (m)</text>
+<text x="730.0" y="1108.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">-420 … 420</text>
+<rect x="960" y="660" width="770" height="430" fill="#101720"/>
+<polygon points="1113.5,660.0 1113.5,1090.0 1114.5,1090.0 1114.5,660.0" fill="#1c2834"/>
+<polygon points="960.0,1004.5 1730.0,1004.5 1730.0,1003.5 960.0,1003.5" fill="#1c2834"/>
+<polygon points="1267.5,660.0 1267.5,1090.0 1268.5,1090.0 1268.5,660.0" fill="#1c2834"/>
+<polygon points="960.0,918.5 1730.0,918.5 1730.0,917.5 960.0,917.5" fill="#1c2834"/>
+<polygon points="1421.5,660.0 1421.5,1090.0 1422.5,1090.0 1422.5,660.0" fill="#1c2834"/>
+<polygon points="960.0,832.5 1730.0,832.5 1730.0,831.5 960.0,831.5" fill="#1c2834"/>
+<polygon points="1575.5,660.0 1575.5,1090.0 1576.5,1090.0 1576.5,660.0" fill="#1c2834"/>
+<polygon points="960.0,746.5 1730.0,746.5 1730.0,745.5 960.0,745.5" fill="#1c2834"/>
+<polygon points="1336.0,876.2 1354.0,876.2 1354.0,873.8 1336.0,873.8" fill="#5af096"/>
+<polygon points="1343.8,866.0 1343.8,884.0 1346.2,884.0 1346.2,866.0" fill="#5af096"/>
+<text x="960.0" y="636.0" font-family="DejaVu Sans Mono, monospace" font-size="17" font-weight="bold" fill="#d2e1eb">PLAN — belly flop ground track</text>
+<text x="962.0" y="676.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">north (m)</text>
+<text x="962.0" y="1108.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">east (m)</text>
+<text x="1580.0" y="1108.0" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="normal" fill="#5a6e7d">-4200 … 4200</text>
+<text x="70.0" y="40.0" font-family="DejaVu Sans Mono, monospace" font-size="21" font-weight="bold" fill="#d2e1eb">Ship 42 / Flight 15 — NO WIND</text>
+<text x="470.0" y="42.0" font-family="DejaVu Sans Mono, monospace" font-size="15" font-weight="normal" fill="#ff5a5a">LOST  offset 0.00 m  landing missed the arms by 88310 m</text>
+<text x="70.0" y="1140.0" font-family="DejaVu Sans Mono, monospace" font-size="13" font-weight="normal" fill="#5a6e7d">cyan = flown path   orange dashed = guidance plan   grey = solid tower boxes   green + = catch point (arm rail top)</text>
+</svg>

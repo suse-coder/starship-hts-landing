@@ -180,6 +180,13 @@ export interface PredInput {
   readonly tRev?: number // absolute time of the one planned bank reversal (high-α; default never)
   readonly sigma0?: number // signed bank flown now; the bank slews from it at sigmaRate
   readonly sigmaRate?: number // rad/s achievable bank slew (rotation about v̂)
+  /**
+   * Coil loss: below this airspeed (m/s) the HTS coil has no steering authority (plasma gone) and is
+   * discharged, so the bank slews at `sigmaRateLate` (cold gas) and the MHD force is zero. Infinity:
+   * the coil is already off. Undefined: no coil-loss model (the old behaviour).
+   */
+  readonly coilLossV?: number
+  readonly sigmaRateLate?: number
   readonly tMax?: number // stop at this absolute time (verification)
   readonly hEnd?: number // stop altitude override (m above the pad's ellipsoid height)
   readonly liftFloor?: number // signed mode: minimum vertical component of the unit lift vector
@@ -234,7 +241,9 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
   const signed = inp.bankSign !== undefined && inp.bankSign !== 0
   let sg = inp.sigma0 ?? (inp.bankSign ?? 1) * inp.bankHigh
   const tRev = inp.tRev ?? Infinity
-  const rate = inp.sigmaRate ?? 0.03
+  const rateEarly = inp.sigmaRate ?? 0.03
+  const rateLate = inp.sigmaRateLate ?? rateEarly
+  const coilLossV = inp.coilLossV ?? 0
   let lv: V3 | null = null // lift unit vector (ECI), signed mode
   const airVel = (rr: V3, vv: V3, hh: number): V3 => {
     const vr0 = sub(vv, corotation(rr))
@@ -285,7 +294,8 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       // aerodynamically restored); a rotation ABOUT v̂ is actuated and rate-limited. So: transport
       // the lift vector ⟂ the new v̂, then rotate it about v̂ toward the target bank by ≤ rate·dt.
       const hh0 = ecefToGeodetic(eciToEcef(r, c.theta0 + OMEGA_EARTH * t)).alt
-      const vh = normalize(airVel(r, v, hh0))
+      const vh0air = airVel(r, v, hh0)
+      const vh = normalize(vh0air)
       const up0 = normalize(r)
       const upP0 = normalize(sub(up0, scale(vh, dot(up0, vh))))
       const right0 = cross(vh, upP0)
@@ -294,6 +304,7 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       const target = (t < tRev ? inp.bankSign! : -inp.bankSign!) * (phase === "highAlpha" || phase === "belly" ? bankH : inp.bankHigh)
       const lt = add(scale(upP0, Math.cos(target)), scale(right0, Math.sin(target)))
       const th = Math.atan2(dot(cross(lv, lt), vh), dot(lv, lt))
+      const rate = norm(vh0air) < coilLossV ? rateLate : rateEarly
       const d = clamp(th, -rate * dt, rate * dt)
       lv = add(scale(lv, Math.cos(d)), scale(cross(vh, lv), Math.sin(d)))
     }
@@ -324,7 +335,8 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       // The coil is still energised through most of the high-α phase (it discharges at ~35 km), so
       // the MHD lift/drag must be in the prediction there too. Omitting it made the range plan for
       // the 500 s high-α window ~780 km wrong even though the aero table matched the plant.
-      const mhdOn = phase === "entry" || phase === "loft" || phase === "coast" || phase === "highAlpha"
+      // MHD force only while the coil has authority: in the high-α phase it is lost at `coilLossV`
+      const mhdOn = phase === "entry" || phase === "loft" || phase === "coast" || (phase === "highAlpha" && V >= coilLossV)
       const ms = inp.mhdDragScale ?? 1
       const msL = inp.mhdLiftScale ?? ms
       const asL = inp.aeroScaleL ?? inp.aeroScale ?? 1

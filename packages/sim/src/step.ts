@@ -11,8 +11,8 @@ import {
   aftBaseHeatFlux, aftFlapThermalStep, plumeHeatFlux, surfaceHeating, thermalStep, thermalSummary, surfaceTemps,
 } from "@ship/heat"
 import { coilEnergy, coilNI, coilStep, dipoleTorque, mhdBasis, ZERO_MHD, type MhdOut } from "@ship/mhd"
-import { armStep, TOWER, towerContact, resolveHullImpact } from "@ship/tower"
-import { allocateGimbals, allocateMhd, allocateRcs, guide, phaseIndex, type Nav, torqueCommand, U_BASE } from "@ship/gnc"
+import { armStep, armTrackCommand, TOWER, towerContact, resolveHullImpact } from "@ship/tower"
+import { allocateGimbals, allocateMhd, allocateRcs, guide, phaseIndex, type Mem, type Nav, type Phase, type RolloutEnd, torqueCommand, U_BASE } from "@ship/gnc"
 import { CH, N_CH } from "./recording"
 import type { SimState } from "./state"
 import type { World } from "./world"
@@ -137,7 +137,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     seedLeft: s.cons.seed, propHeader: s.cons.loxHeader + s.cons.ch4Header,
     thrusts, spoolDone: s.eng.slice(0, 3).filter((e) => e.on).every((e) => e.spool >= 1), pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust,
     mhdDrag: s.mhdOut.forceMag > 0 ? -dot(s.mhdOut.F, vhatB) : 0,
-    aeroF: aero.F, mhdF: s.mhdOut.F, engF,
+    aeroF: aero.F, mhdF: s.mhdOut.F, engF, armX: s.arms.cx ?? 0, arms: s.arms.open,
   }
   // pin load from the previous contact solution is approximated by evaluating contact now
   const pinsNow = [1, -1].map((sg) => {
@@ -150,7 +150,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     pinLoad: cNow ? cNow.pinLoad : 0,
     pinLoadMin: cNow ? cNow.pinLoadMin : 0,
     pinCount: cNow ? cNow.pinCount : 0,
-  }, s.mem, dt)
+  }, s.mem, dt, s.mem.predicting ? undefined : (mem, until) => rolloutFrom(W, s, mem, until))
   const cmd = g.cmd
   // ---------- control & allocation ----------
   // R6 (T08 P0-2): feed the guidance's own table moment, not the plant's exact `aero.M`.
@@ -184,7 +184,11 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   const bellOn = veh.bellFins !== null && cmd.bellFins && coldEngines && V > 30
   const bellEq = bellOn ? bellFinThrustEq(veh.bellFins!, atm.rho, vAirB) : 0
   const bellG = bellOn && bellEq > 500 ? allocateGimbals(veh.engines.slice(0, 3), [bellEq, bellEq, bellEq], mp.xcg, tauRes, Infinity) : null
-  const gim = allocateGimbals(veh.engines.slice(0, 3), thrusts, mp.xcg, tauRes, cmd.useRcs && s.cons.n2 > 0 ? rollCap : Infinity)
+  // Single-engine final approach (`rcsRollOnly`): pitch/yaw have priority. One off-centre gimbal
+  // makes roll whenever it pushes tangentially; capping that component to the cold-gas couples left
+  // pitch/yaw with one usable axis and the attitude diverged (measured: tilt 33° → 96° in 10 s).
+  // Rest-to-rest slews cancel their own roll impulse; the cold-gas roll couples damp the remainder.
+  const gim = allocateGimbals(veh.engines.slice(0, 3), thrusts, mp.xcg, tauRes, cmd.useRcs && !cmd.rcsRollOnly && s.cons.n2 > 0 ? rollCap : Infinity, cmd.rollFirst === true)
   const eng = s.eng.map((e, i) => engineStep(veh.engines[i], e, {
     ...engCmds[i],
     gp: bellG ? bellG.gp[i] ?? 0 : gim.gp[i] ?? 0,
@@ -326,7 +330,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     seed: Math.max(0, s.cons.seed - seedFlow * dt),
   }
   // ---------- thermal (4 Hz) ----------
-  const thermalDue = s.t - s.thT >= 0.25
+  const thermalDue = !W.lite && s.t - s.thT >= 0.25
   const hin = {
     rhoInf: atm.rho, pInf: atm.p, U: V, vhat: vhatB, Rn: veh.shape.p.noseRadius, qInf: qbar,
     mhdHeatFactor: mhdOut.heatFactor,
@@ -345,7 +349,10 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   const tsum = thermalSummary(W.grid, th, veh.coil.x)
   // ---------- magnet, arms, turbulence ----------
   const coil = coilStep(veh.coil, s.coil, { command: cmd.coil, warmWallT: tsum.coilWallT, mhdPower: mhdOut.power, avionicsLoad: 2500 }, dt)
-  const arms = armStep(s.arms, cmd.armsClose, dt)
+  // tower-side controller: the arm pair tracks the ship's pin axis across the rails
+  const hullBetween = pinAxisPad.z > TOWER.armHeight - 3 && pinAxisPad.z < TOWER.armHeight + veh.pinX
+    && pinAxisPad.y > TOWER.pos.y - 2 - TOWER.armLength && pinAxisPad.y < TOWER.pos.y - 2
+  const arms = armStep(s.arms, cmd.armsClose, dt, armTrackCommand(pinAxisPad, velPad), hullBetween ? { x: pinAxisPad.x, r: veh.shape.p.radius } : undefined)
   // ---------- bookkeeping ----------
   const fNonGrav = norm(add(qrot(s.q, Fb), ZERO)) / mp.m
   const gload = fNonGrav / G0
@@ -363,7 +370,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     steel: Math.max(s.peak.steel, tsum.steelMax), mhdForce: Math.max(s.peak.mhdForce, mhdOut.forceMag), coilT: Math.max(s.peak.coilT, coil.Tc),
   }
   const next: SimState = {
-    t: s.t + dt, r, v, q, w, cons, eng, coil, th, thT, qStag, arms, turb, flaps, flapCmd: cmdFlaps, flapTh, mem: g.mem,
+    t: s.t + dt, r, v, q, w, cons, eng, coil, th, thT, qStag, arms, turb, flaps, flapCmd: g.cmd.flapsDeployed || g.cmd.flapDeflections.length > 0 ? { deploy: g.cmd.flapsDeployed, deflections: g.cmd.flapDeflections } : cmdFlaps, flapTh, mem: g.mem,
     mhdBasis: basis, mhdT, mhdU, mhdOut, rcsDuty: rcs.duty, seeding: cmd.seeding,
     events, done: outcome !== "running", outcome, peak,
   }
@@ -397,9 +404,14 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   set("n2", cons.n2); set("rcsTau", norm(rcs.achieved)); set("header", cons.loxHeader + cons.ch4Header)
   const tEach = eng.map((e, i) => engineThrust(veh.engines[i], e, atm.p, mp.xcg).thrust)
   set("thrust", engOut.thrust); set("T1", tEach[0]); set("T2", tEach[1]); set("T3", tEach[2]); set("gp", eng[0].gp); set("gy", eng[0].gy)
+  // per-engine gimbals: the three SL Raptors gimbal independently (differential gimbal is the roll
+  // actuator), so the 3-D view must animate each bell/thrust vector with its own angle, not engine 1's.
+  set("gp1", eng[0].gp); set("gp2", eng[1].gp); set("gp3", eng[2].gp)
+  set("gy1", eng[0].gy); set("gy2", eng[1].gy); set("gy3", eng[2].gy)
   rcs.duty.forEach((d, i) => { row[CH.r0 + i] = d })
   set("pe", relPad.x); set("pn", relPad.y); set("pu", relPad.z); set("ve", velPad.x); set("vn", velPad.y); set("vu", velPad.z)
-  set("pinX", pinRel.x); set("pinY", pinRel.y); set("pinZ", pinRel.z); set("hBase", hBase); set("arms", arms.open)
+  set("pinX", pinRel.x); set("pinY", pinRel.y); set("pinZ", pinRel.z); set("hBase", hBase); set("arms", arms.open); set("armX", arms.cx)
+  set("flapDep", flaps.deployment); set("flapD1", flaps.deflections[0] ?? 0); set("flapD2", flaps.deflections[1] ?? 0)
   set("pinLoad", pinLoad); set("pinLoadMin", pinLoadMin); set("pinCount", pinCount)
   set("bodyContact", bodyContact ? 1 : 0); set("hullBump", hullBump ? 1 : 0)
   set("windE", windEnu.x); set("windN", windEnu.y)
@@ -407,5 +419,39 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   void clamp
   void enuToEcef
   void normalize
-  return { s: next, row, temps: surfaceTemps(W.grid, th), pred: g.mem.predPath }
+  return { s: next, row, temps: W.lite ? NO_TEMPS : surfaceTemps(W.grid, th), pred: g.mem.predPath }
+}
+
+const NO_TEMPS = new Float64Array(0)
+const predWorlds = new WeakMap<World, World>()
+/**
+ * The vehicle model the flight software predicts with: the same dynamics and guidance, the forecast
+ * mean wind without turbulence, no knowledge of a future engine failure, no thermal integration.
+ */
+const predWorld = (W: World): World => {
+  let p = predWorlds.get(W)
+  if (!p) {
+    p = { ...W, lite: true, wind: { ...W.wind, turbulence: 0 }, design: { ...W.design, engineOut: undefined } }
+    predWorlds.set(W, p)
+  }
+  return p
+}
+
+/** onboard prediction rollout (see `Rollout` in @ship/gnc): fly the model from `s0` until `until` */
+export const rolloutFrom = (W: World, s0: SimState, mem: Mem, until: Phase): RolloutEnd | null => {
+  const t0 = performance.now()
+  const st = ((globalThis as { ROLLSTAT?: { n: number; ms: number; by: Record<string, number> } }).ROLLSTAT ??= { n: 0, ms: 0, by: {} })
+  const Wp = predWorld(W)
+  let s: SimState = { ...s0, mem: { ...mem, predicting: true }, events: [] }
+  let row: Float64Array | null = null
+  for (let i = 0; i < 40000 && !s.done && s.mem.phase !== until; i++) {
+    const o = step(Wp, s)
+    s = o.s; row = o.row
+  }
+  const dtMs = performance.now() - t0
+  st.n++; st.ms += dtMs; st.by[s0.mem.phase] = (st.by[s0.mem.phase] ?? 0) + dtMs
+  if (!row) return null
+  // the row describes the state before the last step; one more evaluation gives the end state
+  const end = step(Wp, s).row
+  return { phase: s.mem.phase, t: s.t, pinRel: v3(end[CH.pinX], end[CH.pinY], end[CH.pinZ]), velRel: v3(end[CH.ve], end[CH.vn], end[CH.vu]) }
 }

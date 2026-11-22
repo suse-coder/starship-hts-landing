@@ -11,13 +11,37 @@ export const TOWER = {
   height: 146, // m
   pos: v3(0, 23, 0), // tower centre (north of the mount)
   armHeight: 112, // m, top of the arm rails
-  armLength: 38, // m along −y from the carriage
+  armLength: 44, // m along −y from the carriage
   armWidth: 1.6, // m
+  /** depth of the arm truss at the carriage (root) and at the tip: the real chopsticks are a wedge */
+  armRootDepth: 4.6,
+  armTipDepth: 1.0,
   armDepth: 2.8,
   closedGap: 9.2, // m between inner faces when closed (ship Ø 9 m)
   openGap: 26, // m
   closeTime: 3.0, // s
   mountHeight: 20, // m launch mount top
+  /**
+   * Lateral tracking of the arm pair (m, m/s). The real arms ride trolleys on the traverse beams and
+   * are driven independently, so the closed pair can be centred on an incoming ship that is a few
+   * metres off the tower centreline. Reach is limited by the beams (±16.6 m, closed pair half-width
+   * 6.8 m incl. trolley) with margin; the rate is the closing actuator's (8.4 m in 3 s).
+   */
+  armReach: 7.5, // m, centre offset of the pair
+  armTrackRate: 2.5, // m/s
+  armStandoff: 0.04, // m, clearance the compliant closing drive keeps to the hull
+  /**
+   * Outward flare of each arm's inner face from the rail top down to the underside (m). The real
+   * chopsticks are V trusses: the rails that carry the pins are the narrowest point and the structure
+   * opens downward, so the ship's aft section passes between the arms. With vertical inner faces the
+   * engine section had 0.1 m of clearance and struck the arm underside on a slightly tilted arrival.
+   */
+  /**
+   * Outward lean of the inner face from the rail down to the bottom spine (m). The real truss is a
+   * ▽: two top chords under the track and one bottom spine at mid-width, so the inner face leans out
+   * by about half the arm width — not a wide funnel.
+   */
+  armFlare: 1.8,
   kPin: 2.4e6, // N/m per pin (shock absorber spring)
   cPin: 9.0e5, // N s/m per pin
   mu: 0.35,
@@ -29,17 +53,69 @@ const FRICTION_C = 4e5
 export interface ArmState {
   readonly open: number // 1 open … 0 closed
   readonly cmdClose: boolean
+  /** east offset of the arm pair's centre from the tower centreline (m), |cx| ≤ TOWER.armReach */
+  readonly cx: number
 }
-export const armsInit: ArmState = { open: 1, cmdClose: false }
+export const armsInit: ArmState = { open: 1, cmdClose: false, cx: 0 }
 
-export const armStep = (s: ArmState, cmdClose: boolean, dt: number): ArmState => ({
-  cmdClose,
-  open: clamp(s.open + (cmdClose ? -dt / TOWER.closeTime : dt / TOWER.closeTime), 0, 1),
-})
+/**
+ * `cxCmd`: commanded centre of the pair (tower-side tracking); rate- and reach-limited.
+ * `hull`: the hull between the arms (axis x and radius at arm height), when there is one. The
+ * closing drive is compliant: the arms stop `armStandoff` short of the hull instead of driving into
+ * it. A rigid 2.8 m/s actuator with 0.1 m of clearance shoved a hull that was a few decimetres off
+ * the pair's centre sideways at 3–4 m/s and it rattled between the arms (measured); the real arms
+ * close until they bear on the hull.
+ */
+export const armStep = (s: ArmState, cmdClose: boolean, dt: number, cxCmd = 0, hull?: { readonly x: number; readonly r: number }): ArmState => {
+  const tgt = clamp(cxCmd, -TOWER.armReach, TOWER.armReach)
+  const cx0 = s.cx ?? 0
+  const cx = cx0 + clamp(tgt - cx0, -TOWER.armTrackRate * dt, TOWER.armTrackRate * dt)
+  let open = clamp(s.open + (cmdClose ? -dt / TOWER.closeTime : dt / TOWER.closeTime), 0, 1)
+  if (hull && cmdClose) {
+    const gapMin = 2 * (hull.r + Math.abs(hull.x - cx) + TOWER.armStandoff)
+    const openMin = clamp((gapMin - TOWER.closedGap) / (TOWER.openGap - TOWER.closedGap), 0, 1)
+    // never closer than the hull allows; if the hull moved in, the arm yields at the closing rate
+    open = Math.max(open, Math.min(openMin, s.open + dt / TOWER.closeTime))
+  }
+  return { cmdClose, open, cx }
+}
+
+/**
+ * Tower-side tracking law: centre the arm pair on the ship's catch-pin axis while it descends into
+ * the catch window (within 150 m above the rails, inside the arms' y-span, within twice the reach
+ * across). A short velocity lead covers the actuator lag. Outside the window the pair returns to
+ * the centreline. The ship's own guidance still aims at the centreline; the arms only absorb its
+ * residual across-rail error — a ship farther off than the reach, or moving faster than the arms,
+ * is still a miss.
+ */
+export const armTrackCommand = (pinAxis: V3, vel: V3): number => {
+  const dz = pinAxis.z - TOWER.armHeight
+  const yMin = TOWER.pos.y - 2 - TOWER.armLength, yMax = TOWER.pos.y - 2
+  const inWindow = dz > -3 && dz < 150 && pinAxis.y > yMin - 10 && pinAxis.y < yMax && Math.abs(pinAxis.x) < 2 * TOWER.armReach
+  return inWindow ? clamp(pinAxis.x + 0.4 * vel.x, -TOWER.armReach, TOWER.armReach) : 0
+}
 
 export const armGap = (s: ArmState): number => TOWER.closedGap + (TOWER.openGap - TOWER.closedGap) * s.open
 /** inner-face x positions of the two arms (east/west) */
-export const armInnerX = (s: ArmState): readonly [number, number] => [-armGap(s) / 2, armGap(s) / 2]
+export const armInnerX = (s: ArmState): readonly [number, number] => [(s.cx ?? 0) - armGap(s) / 2, (s.cx ?? 0) + armGap(s) / 2]
+
+/**
+ * Inner-face x of the west (`side` −1) or east (+1) arm at `dz` metres below the rail top. The arms
+ * flare outward with depth (`TOWER.armFlare` over `TOWER.armDepth`), so the opening is widest at the
+ * arm underside and narrowest at the pin rails.
+ */
+export const armInnerAt = (s: ArmState, side: 1 | -1, dz: number): number => {
+  const [xl, xr] = armInnerX(s)
+  const k = clamp(dz / TOWER.armRootDepth, 0, 1) * TOWER.armFlare
+  return side < 0 ? xl - k : xr + k
+}
+
+/** truss depth at station `y` (pad ENU): linear wedge from the carriage to the tip, as built */
+export const armDepthAt = (y: number): number => {
+  const yRoot = TOWER.pos.y - 2, yTip = yRoot - TOWER.armLength
+  const f = clamp((y - yTip) / (yRoot - yTip), 0, 1)
+  return TOWER.armTipDepth + (TOWER.armRootDepth - TOWER.armTipDepth) * f
+}
 
 export interface ContactOut {
   readonly F: V3 // ENU, on the ship
@@ -72,9 +148,6 @@ export interface TowerBox {
   readonly hi: V3
 }
 
-/** root haunch of the V-arm: visual depth 4.6 m at the carriage, 2.8 m from this station south */
-const ARM_ROOT_DEPTH = 4.6
-const ARM_HAUNCH_Y = 6
 /** trolley / actuator envelope above the arm root (view/tower.ts ARM + ACT) */
 const ARM_TROLLEY_DEPTH = 6.2
 const ARM_TROLLEY_TOP = 3.6
@@ -101,7 +174,6 @@ export const towerBoxes = (arms: ArmState): readonly TowerBox[] => {
   const [xl, xr] = armInnerX(arms)
   const yTip = TOWER.pos.y - 2 - TOWER.armLength
   const yRoot = TOWER.pos.y - 2
-  const zArm = TOWER.armHeight - TOWER.armDepth
   const y = TOWER.pos.y
   return [
     // lattice: corner columns at ±5.25 m (1.5 m boxes) and bracing inside a ±6 m envelope; mast to 146 m
@@ -119,12 +191,22 @@ export const towerBoxes = (arms: ArmState): readonly TowerBox[] => {
     { id: "carriage", lo: v3(-8.2, y - 9.3, TOWER.armHeight - 9.1), hi: v3(8.2, y + 8.2, TOWER.armHeight + 9.6) },
     // traverse beams the arm trolleys ride on (x ±16.6 m, two levels around 107–114 m)
     { id: "traverse-beams", lo: v3(-16.6, 13.6, TOWER.armHeight - 5.8), hi: v3(16.6, 14.9, TOWER.armHeight + 1.9) },
-    // the two arms: solid from the rail top down by armDepth, tip to root
-    { id: "arm-west", lo: v3(xl - TOWER.armWidth, yTip, zArm), hi: v3(xl, yRoot, TOWER.armHeight) },
-    { id: "arm-east", lo: v3(xr, yTip, zArm), hi: v3(xr + TOWER.armWidth, yRoot, TOWER.armHeight) },
-    // root haunch: the visual underside deepens from 2.8 m to 4.6 m between n = 6 m and the carriage
-    { id: "arm-west-root", lo: v3(xl - TOWER.armWidth, ARM_HAUNCH_Y, TOWER.armHeight - ARM_ROOT_DEPTH), hi: v3(xl, yRoot, TOWER.armHeight) },
-    { id: "arm-east-root", lo: v3(xr, ARM_HAUNCH_Y, TOWER.armHeight - ARM_ROOT_DEPTH), hi: v3(xr + TOWER.armWidth, yRoot, TOWER.armHeight) },
+    // the two arms: the real wedge — a horizontal track on top, a single lower chord, and the
+    // underside rising from `armRootDepth` at the carriage to `armTipDepth` at the tip. Sliced along
+    // the length (each slice's inner face is the narrowest x inside it, so the boxes contain the
+    // steel); the inner face leans out by `armFlare` from the rail to the bottom spine.
+    ...Array.from({ length: 10 }, (_, k) => {
+      const y0 = yTip + ((yRoot - yTip) * k) / 10, y1 = yTip + ((yRoot - yTip) * (k + 1)) / 10
+      const d = armDepthAt(y1)
+      // the box's inner edge is the rail face (the narrowest point of the slice), so the box contains
+      // the whole truss including its top; the V flare is the visible inner face, not extra envelope
+      const w = armInnerAt(arms, -1, 0), e = armInnerAt(arms, 1, 0)
+      const top = TOWER.armHeight
+      return [
+        { id: k === 0 ? "arm-west" : `arm-west-${k}`, lo: v3(w - TOWER.armWidth, y0, top - d), hi: v3(w, y1, top) },
+        { id: k === 0 ? "arm-east" : `arm-east-${k}`, lo: v3(e, y0, top - d), hi: v3(e + TOWER.armWidth, y1, top) },
+      ]
+    }).flat(),
     // arm trolleys, shoes, clevis and actuator anchors at the carriage end
     { id: "arm-west-trolley", lo: v3(xl - 0.6, 12.25, TOWER.armHeight - ARM_TROLLEY_DEPTH), hi: v3(xl + TOWER.armWidth + 0.6, 14.9, TOWER.armHeight + ARM_TROLLEY_TOP) },
     { id: "arm-east-trolley", lo: v3(xr - TOWER.armWidth - 0.6, 12.25, TOWER.armHeight - ARM_TROLLEY_DEPTH), hi: v3(xr + 0.6, 14.9, TOWER.armHeight + ARM_TROLLEY_TOP) },

@@ -3,7 +3,7 @@
  * live progress sketch, then play the recording back — slider scrubbing, play/speed, phases,
  * telemetry, charts, events, exploded view, three cameras.
  */
-import { DEFAULT_DESIGN } from "@ship/craft"
+import { DEFAULT_DESIGN, FLIGHT_DESIGN, type DesignParams } from "@ship/craft"
 import { CH, valueAt, type ChannelKey, type FromWorker, type Recording } from "@ship/sim"
 import { createView, marginColor, rainbow, type CameraMode, type TreeNode } from "@ship/view"
 import { steelYieldRetention, THERMAL_LIMITS } from "@ship/heat"
@@ -93,8 +93,16 @@ let simTimer: ReturnType<typeof setTimeout> | undefined
 const spin = (ts: number): void => { if (!loading) return; drawSketch(ts / 180); requestAnimationFrame(spin) }
 requestAnimationFrame(spin)
 
+const noWindBox = $<HTMLInputElement>("nowind")
+/** the design actually run: the UI can zero the wind for deterministic model/guidance work */
+const designNow = (): DesignParams => ({
+  ...FLIGHT_DESIGN,
+  windScale: noWindBox.checked ? 0 : DEFAULT_DESIGN.windScale,
+  turbulence: noWindBox.checked ? 0 : DEFAULT_DESIGN.turbulence,
+})
+let design = designNow()
 /** cache key: physics-source hash (vite plugin) + design parameters */
-const cacheKey = `${SIM_VERSION}:${fnv1a(JSON.stringify(DEFAULT_DESIGN))}`
+const cacheKey = (): string => `${SIM_VERSION}:${fnv1a(JSON.stringify(design))}`
 
 const clearSimTimer = (): void => {
   if (simTimer !== undefined) {
@@ -120,7 +128,9 @@ const boot = async (force: boolean): Promise<void> => {
     // A precomputed recording (scripts/snapshot.ts, committed as public/recording.bin) is what a
     // static Pages visitor plays directly — no worker, no re-simulation, no waiting.
     $("pstatus").textContent = "loading the recorded mission…"
-    const snap = await loadSnapshot()
+    // the committed recording is the no-wind mission (the default). With wind on the design differs,
+    // so that run is simulated from the same code instead of played back.
+    const snap = noWindBox.checked ? await loadSnapshot() : null
     if (snap) {
       loading = false
       $("loading").classList.add("hidden")
@@ -130,7 +140,7 @@ const boot = async (force: boolean): Promise<void> => {
       return
     }
     $("pstatus").textContent = "loading the stored simulation…"
-    const cached = await loadCached(cacheKey).catch((e) => {
+    const cached = await loadCached(cacheKey()).catch((e) => {
       console.warn("cache read failed; re-simulating", e)
       return null
     })
@@ -176,7 +186,7 @@ const runSim = (): void => {
       $("loading").classList.remove("error")
       $("load-retry").hidden = true
       start(m.recording)
-      void storeCached(cacheKey, m.recording)
+      void storeCached(cacheKey(), m.recording)
     } else {
       worker.terminate()
       simError(m.message)
@@ -186,7 +196,7 @@ const runSim = (): void => {
     worker.terminate()
     simError(e.message || "the simulation worker crashed before it could start")
   }
-  worker.postMessage({ kind: "run", design: DEFAULT_DESIGN })
+  worker.postMessage({ kind: "run", design })
 }
 
 $("load-retry").onclick = () => { void clearCached().then(() => runSim()).catch(() => runSim()) }
@@ -525,44 +535,6 @@ const buildSideView = (r: Recording): void => {
   g.strokeStyle = "#cfd8e0"; g.lineWidth = 1.5
   g.beginPath(); g.moveTo(full.x1, full.y0); g.lineTo(full.x1, full.y1); g.stroke()
   sideText(g, "tower", full.x1 - 4, full.y0 - 6, "right", "#cfd8e0", 9)
-  // ---- final 2 km
-  // 5 km window: the user wants the end of the approach visible together with the tower (the
-  // overshoot is hundreds of metres to kilometres, not tens)
-  const nmin = -2500, nmax = 2500, zumax = 2500
-  const ZX = (n: number): number => zoom.x0 + ((n - nmin) / (nmax - nmin)) * (zoom.x1 - zoom.x0)
-  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / zumax) * (zoom.y1 - zoom.y0)
-  g.strokeStyle = "rgba(120,150,170,0.45)"; g.lineWidth = 1
-  g.strokeRect(zoom.x0, zoom.y0, zoom.x1 - zoom.x0, zoom.y1 - zoom.y0)
-  // 100 m band around the catch
-  g.fillStyle = "rgba(90,240,160,0.10)"; g.fillRect(ZX(-100), zoom.y0, ZX(100) - ZX(-100), zoom.y1 - zoom.y0)
-  g.strokeStyle = "rgba(90,240,160,0.5)"; g.setLineDash([4, 4])
-  g.beginPath(); g.moveTo(ZX(-100), zoom.y0); g.lineTo(ZX(-100), zoom.y1); g.moveTo(ZX(100), zoom.y0); g.lineTo(ZX(100), zoom.y1); g.stroke()
-  g.setLineDash([])
-  sideText(g, "±100 m", ZX(0), zoom.y1 + 12, "center", "#7cf0b0", 9)
-  // ground, tower column, arms, catch
-  g.strokeStyle = "rgba(160,180,195,0.7)"; g.beginPath(); g.moveTo(zoom.x0, ZY(0)); g.lineTo(zoom.x1, ZY(0)); g.stroke()
-  g.fillStyle = "rgba(200,210,220,0.85)"
-  const tw = Math.max(2.5, ZX(TOWER.pos.y + 6) - ZX(TOWER.pos.y - 6))
-  g.fillRect(ZX(TOWER.pos.y) - tw / 2, ZY(146), tw, ZY(0) - ZY(146))
-  g.fillStyle = "#e8eef4"
-  g.fillRect(ZX(-17), ZY(TOWER.armHeight) - 3, Math.max(3, ZX(21) - ZX(-17)), 6)
-  g.beginPath(); g.arc(ZX(0), ZY(TOWER.armHeight), 4, 0, Math.PI * 2); g.fillStyle = "#5af0a0"; g.fill()
-  sideText(g, "tower", ZX(TOWER.pos.y) + tw / 2 + 4, ZY(120), "left", "#cfd8e0", 9)
-  sideText(g, "arms", ZX(21) + 4, ZY(TOWER.armHeight) + 14, "left", "#cfd8e0", 9)
-  sideText(g, "catch", ZX(0) + 6, ZY(TOWER.armHeight) - 12, "left", "#7cf0b0", 9)
-  sideText(g, "0", ZX(0), zoom.y1 + 12, "center", "#9fb8c8", 9)
-  sideText(g, `${nmax} m`, zoom.x1, zoom.y1 + 24, "right", "#9fb8c8", 9)
-  sideText(g, `${nmin} m`, zoom.x0, zoom.y1 + 24, "left", "#9fb8c8", 9)
-  sideText(g, `${zumax} m`, zoom.x0 - 4, zoom.y0 + 1, "right", "#9fb8c8", 9)
-  // path in the zoom (only samples near the pad)
-  g.beginPath(); let started = false
-  for (let i = 0; i < r.n; i += step) {
-    if (Math.abs(pn[i]) > 2700) continue
-    const x = ZX(pn[i]), y = ZY(pu[i])
-    if (!started) { g.moveTo(x, y); started = true } else g.lineTo(x, y)
-  }
-  g.strokeStyle = "rgba(6,12,20,0.6)"; g.lineWidth = 3.4; g.stroke()
-  g.strokeStyle = "rgba(90,200,255,0.8)"; g.lineWidth = 1.5; g.stroke()
   sideBase = c
 }
 
@@ -586,7 +558,8 @@ const drawSideView = (tt: number): void => {
   const FX = (rr: number): number => full.x1 - (rr / rmax) * (full.x1 - full.x0)
   const FY = (u: number): number => full.y1 - Math.max(u, 0) / umax * (full.y1 - full.y0)
   const step = Math.max(1, Math.floor(r.n / 900))
-  // ---- left: full path + the flown part + the current marker
+  // ---- left: full path + the flown part + the current marker (clipped to its panel)
+  g.save(); g.beginPath(); g.rect(full.x0, full.y0 - 30, full.x1 - full.x0 + 160, full.y1 - full.y0 + 30); g.clip()
   g.strokeStyle = "#69d2ff"; g.lineWidth = 1.8
   g.beginPath()
   for (let k = 0; k <= i; k += step) { const x = FX(Math.hypot(pe[k], pn[k])), y = FY(pu[k]); if (k === 0) g.moveTo(x, y); else g.lineTo(x, y) }
@@ -599,6 +572,7 @@ const drawSideView = (tt: number): void => {
     g.strokeStyle = "#fff"; g.lineWidth = 1.4; g.stroke()
     sideText(g, `${(range / 1e3).toFixed(2)} km · ${(alt / 1e3).toFixed(2)} km`, x + 8, y - 10, "left", "#ffd9b0", 10)
   }
+  g.restore()
   // ---- right: the tower AND the path/plan together. A fixed window cannot do that when the ship
   // misses by kilometres, so the half-width follows the larger of the ship and the planned terminal
   // point (minimum 2.5 km). Both lines must be visible in the same frame as the tower.
@@ -634,6 +608,9 @@ const drawSideView = (tt: number): void => {
   sideText(g, "0", ZX(0), zy1 + 12, "center", "#9fb8c8", 9)
   sideText(g, `+${(nWin / 1000).toFixed(1)} km`, zx1 - 2, zy1 + 24, "right", "#9fb8c8", 9)
   sideText(g, `-${(nWin / 1000).toFixed(1)} km`, zx0 + 2, zy1 + 24, "left", "#9fb8c8", 9)
+  // everything below is clipped to the right panel: points above its 2.5 km height or outside its
+  // north window must not spill into the gap between the panels
+  g.save(); g.beginPath(); g.rect(zx0, zy0, zx1 - zx0, zy1 - zy0); g.clip()
   // flown path (windowed)
   {
     let st = false
@@ -675,6 +652,7 @@ const drawSideView = (tt: number): void => {
     const miss = Math.hypot(pe[i], pn[i])
     sideText(g, `${pn[i].toFixed(0)} m N · ${miss.toFixed(0)} m from catch`, x + 8, y - 10, "left", "#ffd9b0", 9)
   }
+  g.restore()
   sideText(g, "— plan", zx1 - 4, zy1 - 8, "right", "#dcf4ff", 9)
   sideText(g, "— flown", zx0 + 4, zy1 - 8, "left", "#69d2ff", 9)
 }
@@ -875,4 +853,11 @@ requestAnimationFrame(loop)
 document.body.classList.add("locked")
 view.resize()
 $("b-resim").onclick = () => { setPlaying(false); rec = null; document.body.classList.add("locked"); void clearCached().then(() => runSim()) }
+noWindBox.onchange = () => {
+  design = designNow()
+  setPlaying(false)
+  rec = null
+  document.body.classList.add("locked")
+  void clearCached().then(() => runSim())
+}
 void boot(new URLSearchParams(location.search).has("resim"))
