@@ -522,11 +522,21 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut =>
         const sol = solveBank(ctx.pred, predInput(n, mem, "entry"), "entry", mem.bank, T.aimEntry)
         mem = { ...mem, bank: sol.bank, pred: sol.out, npcT: n.t }
       }
-      // lateral: bank reversals when the crossrange leaves a deadband shrinking with range to go
+      // Lateral: bank reversal on the *zero-effort miss*, not the crossrange position. A position-only
+      // rule lets the ship fly through the line: it banks toward the pad all the way in, crosses the
+      // line and arrives with hundreds of m/s of crossrange rate (the 384 km hand-over). Reversing
+      // when `crossrange + rate · time-to-go` is on the bank's side brakes the closing rate before the
+      // crossing. The dwell covers a full 2|σ| reversal at the coil's bank slew (≈ 30 s at 40°).
       const { cr, range } = crossrange(n)
-      if (mem.phase === "entry" && Math.abs(cr) > crDeadband(range) && Math.sign(cr) === mem.bankSign) {
-        mem = { ...mem, bankSign: -mem.bankSign }
-        ev.push(`bank reversal → ${mem.bankSign > 0 ? "right" : "left"} (crossrange ${(cr / 1000).toFixed(1)} km of ${(range / 1000).toFixed(0)} km)`)
+      const dtCr = n.t - mem.crT
+      const crDot = dtCr > 0.5 && dtCr < 30 ? (cr - mem.crPrev) / dtCr : 0
+      mem = { ...mem, crPrev: cr, crT: n.t }
+      const tgoCr = clamp(range / Math.max(n.V, 200), 10, 400)
+      const zemCr = cr + 0.85 * crDot * tgoCr
+      const dbCr = crDeadband(range)
+      if (mem.phase === "entry" && Math.abs(zemCr) > dbCr && Math.sign(zemCr) === mem.bankSign && n.t - mem.revT > 40) {
+        mem = { ...mem, bankSign: -mem.bankSign, revT: n.t }
+        ev.push(`bank reversal (ZEM) → ${mem.bankSign > 0 ? "right" : "left"}: crossrange ${(cr / 1000).toFixed(1)} km, rate ${(crDot / 1e3).toFixed(2)} km/s, ZEM ${(zemCr / 1000).toFixed(1)} km of ${(range / 1000).toFixed(0)} km`)
       }
       // Descent profile (user 2026-11-21): the loft keeps the entry bank only up to the lift-up that the
       // range/heat needs. A fully monotonic descent is not available: the entry's α ≈ 10° lift exceeds
