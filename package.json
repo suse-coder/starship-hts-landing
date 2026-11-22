@@ -2,7 +2,7 @@
   "name": "starship-mhd",
   "private": true,
   "type": "module",
-  "description": "Flapless Starship (Ship 42 / Flight 15) with an HTS magnetohydrodynamic plasma coil — full-physics deorbit-to-catch simulation engine and 3D playback in the browser",
+  "description": "Flapless Starship (Ship 42 / Flight 15) with an HTS magnetohydrodynamic plasma coil \u2014 full-physics deorbit-to-catch simulation engine and 3D playback in the browser",
   "workspaces": [
     "packages/*"
   ],
@@ -14,7 +14,8 @@
     "test": "bun test packages",
     "check": "bun run typecheck && bun run test",
     "mission": "bun scripts/mission.ts",
-    "tables": "bun packages/gas/scripts/gen-table.ts"
+    "tables": "bun packages/gas/scripts/gen-table.ts",
+    "snapshot": "bun scripts/snapshot.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

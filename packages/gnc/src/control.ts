@@ -33,8 +33,11 @@ export const GAINS = {
   vacuum: { wn: 0.1, zeta: 1.0, wMax: (0.5 * Math.PI) / 180, deadband: (0.6 * Math.PI) / 180, accelLimit: 0.0035 },
   mhd: { wn: 1.4, zeta: 0.85, wMax: (4 * Math.PI) / 180, wnRoll: 0.25, rollBand: (1.0 * Math.PI) / 180 },
   pitchUp: { wn: 0.6, zeta: 0.9, wMax: (8 * Math.PI) / 180, wnRoll: 0.25 },
-  aero: { wn: 0.4, zeta: 0.9, wMax: (2.5 * Math.PI) / 180, wnRoll: 0.25, deadband: (3.0 * Math.PI) / 180, rollBand: (1.0 * Math.PI) / 180, accelLimit: 0.0035 },
-  belly: { wn: 0.45, zeta: 1.0, wMax: (3.2 * Math.PI) / 180, wnRoll: 0.2, deadband: (5.0 * Math.PI) / 180, rollBand: (1.5 * Math.PI) / 180, accelLimit: 0.0035 },
+  // The high-α bank command slews at up to 3°/s (SIGMA_RATE_HIGH) and the belly at ~1.8°/s. The
+  // attitude loop must be able to follow it: at wMax 2.5°/s the bank lagged 40–50° through a
+  // reversal, so the lift pointed the wrong way and the 383 km entry crossrange was never corrected.
+  aero: { wn: 0.5, zeta: 0.9, wMax: (5.0 * Math.PI) / 180, wnRoll: 0.25, deadband: (3.0 * Math.PI) / 180, rollBand: (1.0 * Math.PI) / 180, accelLimit: 0.01 },
+  belly: { wn: 0.5, zeta: 1.0, wMax: (5.0 * Math.PI) / 180, wnRoll: 0.2, deadband: (5.0 * Math.PI) / 180, rollBand: (1.5 * Math.PI) / 180, accelLimit: 0.008 },
   // the flip only pitches: three engines hold roll by differential gimbal (no cold gas after ignition, R11c)
   flip: { wn: 1.3, zeta: 0.9, wMax: (32 * Math.PI) / 180, wnRoll: 0.35, rollMax: (2 * Math.PI) / 180 },
   // Two sea-level Raptors (T09): 2 × 2.45 MN at ±15°, lever ≈ 24.6 m → ≈ 31 MN·m pitch/yaw

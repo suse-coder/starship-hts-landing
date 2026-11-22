@@ -14,7 +14,8 @@
     "@ship/craft": "workspace:*",
     "@ship/heat": "workspace:*",
     "@ship/sim": "workspace:*",
-    "@ship/view": "workspace:*"
+    "@ship/view": "workspace:*",
+    "@ship/tower": "workspace:*"
   },
   "scripts": {
     "dev": "vite --port 5199 --host",

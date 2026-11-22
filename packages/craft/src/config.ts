@@ -26,6 +26,49 @@ export interface DesignParams {
    * Absent or `enabled: false` leaves the flown baseline exactly unchanged.
    */
   readonly aftFlaps?: AftFlapDesign
+  /**
+   * Open-base gimballed-bell fins: the three Raptor SL bells, with the engines cold, are tilted on
+   * their existing gimbals to act as small aft aero fins. The aft skirt is opened so the bells see
+   * the base flow instead of a sealed cavity; `wakeFactor` is the remaining base-wake shadow on the
+   * local dynamic pressure. Absent or `enabled: false` leaves the flown baseline exactly unchanged.
+   */
+  readonly bellFins?: BellFinDesign
+}
+
+/**
+ * Geometry and assumptions for the open-base gimballed-bell fins.
+ *
+ * The bell is modelled as a blunt body at incidence β to the body axis: Newtonian flat-plate
+ * normal force C_N = 2 sin²β, so tilting the bell by δ changes the lateral force by
+ * dC_N/dβ = 4 sinβ cosβ per radian. `area` is the exposed side area per bell (the exit area is a
+ * conservative proxy), `wakeFactor` the base-wake dynamic-pressure fraction at the aft end
+ * (0.3 fully shadowed … 1.0 freestream), and the open skirt slightly reduces the base drag and
+ * adds base heat. The engine gimbal actuator (±15°, 20°/s) is the existing one.
+ */
+export interface BellFinDesign {
+  readonly enabled: boolean
+  readonly area: number // m² of exposed side area per SL bell
+  readonly wakeFactor: number // 0…1 base-wake dynamic-pressure factor
+  readonly baseDragFactor: number // CAB scale with the open base (0.8 = 20 % less base drag)
+  readonly baseHeatFraction: number // open-bay base heat as a fraction of the stagnation flux
+  /**
+   * Shroud/duct gain on the bell side force. A gimballed short duct around each bell turns more of
+   * the base flow than the bare bell: the moving shroud changes the local exit pressure as it tilts,
+   * so the lateral force rises for the same gimbal angle. 1.0 = bare bells, 1.35 = a tight shroud.
+   */
+  readonly ductFactor: number
+  /** installed mass per bell shroud (kg) */
+  readonly ductMass: number
+}
+
+export const DEFAULT_BELL_FINS: BellFinDesign = {
+  enabled: false,
+  area: 1.33,
+  wakeFactor: 0.45,
+  baseDragFactor: 0.8,
+  baseHeatFraction: 0.06,
+  ductFactor: 1.35,
+  ductMass: 110,
 }
 
 /**
@@ -174,6 +217,8 @@ export const DEFAULT_DESIGN: DesignParams = {
   seed: 42,
   // optional deployable aft flaps: present in the design JSON, off on the flown baseline
   aftFlaps: DEFAULT_AFT_FLAPS,
+  // open-base gimballed-bell fins: flown from this revision (engines cold, no propellant)
+  bellFins: { enabled: true, area: 1.33, wakeFactor: 0.45, baseDragFactor: 0.8, baseHeatFraction: 0.06, ductFactor: 1.0, ductMass: 110 },
 }
 
 /** Inertia primitive for the mass model. */
@@ -275,6 +320,8 @@ export interface VehicleConfig {
   readonly pica: PicaDesign
   /** installed optional aft flap set; null on the flown baseline */
   readonly aftFlaps: AftFlapSet | null
+  /** open-base bell-fin design; null when the base is closed (the flown baseline) */
+  readonly bellFins: BellFinDesign | null
   readonly steelThickness: number
   readonly pinX: number // catch pin body x
   readonly pinOut: number // pin tip radius (from axis)
@@ -386,6 +433,7 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
   const coil = designCoil(d, LENGTH)
   const pica = designPica(d, shape)
   const aftFlaps = d.aftFlaps?.enabled ? makeAftFlapSet(d.aftFlaps) : null
+  const bellFins = d.bellFins?.enabled ? d.bellFins : null
   const steelT = 0.00397
   const noseSkin = wettedArea(shape, shape.Lc, LENGTH) * steelT * 7900
   const xLoxHeader = 46.6
@@ -397,7 +445,10 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     { id: "commonDome", label: "Common dome", mass: 2000, x: 21.5, body: { kind: "disk", r: R_HULL }, group: "structure" },
     { id: "fwdDome", label: "Forward dome", mass: 1800, x: 31.6, body: { kind: "disk", r: R_HULL }, group: "structure" },
     { id: "stringers", label: "Tank stringers + internal structure", mass: 3500, x: 18, body: { kind: "shell", r: 4.4, l: 27 }, group: "structure" },
-    { id: "skirt", label: "Aft skirt / engine bay", mass: 4500, x: 2.8, body: { kind: "shell", r: R_HULL, l: 5.5 }, group: "structure" },
+    // Open engine bay: the aft skirt *panels* around the bells are removed so the cold gimbals can
+    // act as bell fins. The thrust structure, frames and the aft dome remain; the sheet metal that
+    // enclosed the engines (≈3 t of the 4.5 t item) is gone.
+    { id: "skirt", label: "Open engine bay: thrust structure + frames (panels opened for the bell fins; mass kept conservative)", mass: 4500, x: 2.8, body: { kind: "shell", r: R_HULL, l: 5.5 }, group: "structure" },
     { id: "rsl", label: "3 × Raptor 3 (sea level), 1525 kg each", mass: 3 * 1525, x: 2.2, body: { kind: "ring", r: 1.3 }, group: "propulsion" },
     { id: "rvac", label: "3 × Raptor 3 Vacuum, ~2100 kg each", mass: 3 * 2100, x: 2.6, body: { kind: "ring", r: 3.2 }, group: "propulsion" },
     { id: "feed", label: "Downcomers, valves, electric TVC", mass: 3000, x: 10, body: { kind: "solid", r: 1.5, l: 12 }, group: "propulsion" },
@@ -421,6 +472,16 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     { id: "seed", label: "Caesium seed tank + injectors (dry; 400 kg Cs in consumables)", mass: coil.massSeed, x: 50.2, body: { kind: "solid", r: 0.4, l: 0.5 }, group: "mhd" },
     { id: "rcsDry", label: `Cold-gas RCS: N2 COPVs (${(d.n2Mass / 1000).toFixed(1)} t gas at 300 bar), 12 thrusters`, mass: 400 + 0.6 * d.n2Mass, x: 32.5, body: { kind: "shell", r: 3.8, l: 2 }, group: "rcs" },
   ]
+  if (bellFins) {
+    components.push({
+      id: "bellDucts",
+      label: `3 × gimballed bell-fin shrouds (${bellFins.ductMass} kg each)`,
+      mass: 3 * bellFins.ductMass,
+      x: 1.5,
+      body: { kind: "ring", r: 2.6 },
+      group: "structure",
+    })
+  }
   if (aftFlaps) {
     components.push({
       id: "aftFlaps",
@@ -475,7 +536,7 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     })
   }
   return {
-    design: d, shape, components, engines, thrusters, couples, rcsIsp: 73, coil, pica, aftFlaps, steelThickness: steelT,
+    design: d, shape, components, engines, thrusters, couples, rcsIsp: 73, coil, pica, aftFlaps, bellFins, steelThickness: steelT,
     // pins at the nosecone base (chopstick lift points), research/05
     pinX: N_RINGS * RING_H + 1.2, pinOut: R_HULL + 0.8, xLoxHeader, xCh4Header, xLoxMain: 5.2, xCh4Main: 22.3, xN2: 32.5, mixtureRatio: 3.6,
   }

@@ -2,3 +2,4 @@
 export * from "./aero"
 export * from "./flaps"
 export * from "./stability"
+export * from "./bellfins"

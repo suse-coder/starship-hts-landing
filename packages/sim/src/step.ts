@@ -6,7 +6,7 @@ import {
 } from "@ship/earth"
 import { lookupStag, type StagState, cyclotronFreq, criticalDensity } from "@ship/gas"
 import { engineStep, engineThrust, massProps, rcsWrench, sumEngines, type EngineCmd, type EngineOut, type MassProps } from "@ship/craft"
-import { aeroWrench, stepAftFlaps, type AeroOut, type AftFlapCommand } from "@ship/aero"
+import { aeroWrench, bellFinThrustEq, bellFinWrench, stepAftFlaps, type AeroOut, type AftFlapCommand } from "@ship/aero"
 import {
   aftBaseHeatFlux, aftFlapThermalStep, plumeHeatFlux, surfaceHeating, thermalStep, thermalSummary, surfaceTemps,
 } from "@ship/heat"
@@ -132,6 +132,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     seedLeft: s.cons.seed, propHeader: s.cons.loxHeader + s.cons.ch4Header,
     thrusts, spoolDone: s.eng.slice(0, 3).filter((e) => e.on).every((e) => e.spool >= 1), pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust,
     mhdDrag: s.mhdOut.forceMag > 0 ? -dot(s.mhdOut.F, vhatB) : 0,
+    aeroF: aero.F, mhdF: s.mhdOut.F,
   }
   // pin load from the previous contact solution is approximated by evaluating contact now
   const pinsNow = [1, -1].map((sg) => {
@@ -163,12 +164,24 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     tauRes = sub(tauRes, mhdOut.M)
   }
   const engCmds: EngineCmd[] = s.eng.map((_, i) => cmd.engines[i] ?? { on: false, throttle: 0.4, gp: 0, gy: 0 })
+  const engOut0 = thrusts.reduce((a, b) => a + b, 0)
   // cold-gas roll authority (strongest roll couple), with margin: the gimbal may not make more roll than this
   const rollCap = 0.7 * Math.max(...veh.couples.map((cp) => Math.abs(veh.thrusters[cp.a].thrust * (veh.thrusters[cp.a].pos.z * veh.thrusters[cp.a].dir.y - veh.thrusters[cp.a].pos.y * veh.thrusters[cp.a].dir.z) * 2)))
   // With the RCS off (flip, landing, terminal) the gimbal must take the full torque, including roll:
   // the old roll cap left that residual to cold gas, so the landing appeared to steer on thrusters.
+  // Open-base bell fins: with the engines cold, the same gimbals are the aero actuator. Allocate the
+  // residual attitude torque (after the coil) to the 3 bells using their equivalent lateral thrust
+  // q·wake·A·dC_N/dβ. The actuator rate/limit stay the engine gimbal's ±15° at 20°/s.
+  const coldEngines = cmd.engines.every((c) => !c.on) && engOut0 < 1e3
+  const bellOn = veh.bellFins !== null && cmd.bellFins && coldEngines && V > 30
+  const bellEq = bellOn ? bellFinThrustEq(veh.bellFins!, atm.rho, vAirB) : 0
+  const bellG = bellOn && bellEq > 500 ? allocateGimbals(veh.engines.slice(0, 3), [bellEq, bellEq, bellEq], mp.xcg, tauRes, Infinity) : null
   const gim = allocateGimbals(veh.engines.slice(0, 3), thrusts, mp.xcg, tauRes, cmd.useRcs && s.cons.n2 > 0 ? rollCap : Infinity)
-  const eng = s.eng.map((e, i) => engineStep(veh.engines[i], e, { ...engCmds[i], gp: gim.gp[i] ?? 0, gy: gim.gy[i] ?? 0 }, dt))
+  const eng = s.eng.map((e, i) => engineStep(veh.engines[i], e, {
+    ...engCmds[i],
+    gp: bellG ? bellG.gp[i] ?? 0 : gim.gp[i] ?? 0,
+    gy: bellG ? bellG.gy[i] ?? 0 : gim.gy[i] ?? 0,
+  }, dt))
   const feedMain = s.mem.phase === "deorbitBurn" || s.mem.phase === "deorbitAlign"
   const propAvail = feedMain ? s.cons.loxMain + s.cons.ch4Main : s.cons.loxHeader + s.cons.ch4Header
   let engOut: EngineOut = sumEngines(eng.map((e, i) => engineThrust(veh.engines[i], e, atm.p, mp.xcg)))
@@ -176,6 +189,11 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   // 50 kg, but a guidance failure must not turn the engine model into a reactionless thruster.
   if (propAvail <= 1) engOut = { F: v3(0, 0, 0), M: v3(0, 0, 0), mdot: 0, thrust: 0 }
   tauRes = sub(tauRes, engOut.M)
+  // bell-fin wrench from the gimbals the actuator actually reached this step (not the command)
+  const bell = bellOn
+    ? bellFinWrench(veh.bellFins, veh.engines, { vAir: vAirB, rho: atm.rho, gimbals: eng.slice(0, 3).map((e) => ({ gp: e.gp, gy: e.gy })), xcg: mp.xcg })
+    : { F: ZERO, M: ZERO }
+  tauRes = sub(tauRes, bell.M)
   // cold gas cannot help against MN·m pitch/yaw residuals of a saturated primary actuator:
   // keep roll, drop pitch/yaw unless the residual is within ~2× the couple capacity
   const coupleCap = veh.thrusters[0].thrust * (veh.thrusters[0].pos.x - veh.thrusters[4].pos.x)
@@ -187,8 +205,8 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   const bEci = rot(geomagneticEcef(ecef))
   const magT = alt > 90e3 ? dipoleTorque(NI, veh.coil.a, qrotInv(s.q, bEci)) : ZERO
   // ---------- rigid-body integration (RK4; body loads held, gravity & contact per stage) ----------
-  const Fb = add(add(add(aero.F, mhdOut.F), engOut.F), rcsOut.F)
-  const Mb = add(add(add(add(aero.M, mhdOut.M), engOut.M), rcsOut.M), magT)
+  const Fb = add(add(add(add(aero.F, mhdOut.F), engOut.F), rcsOut.F), bell.F)
+  const Mb = add(add(add(add(add(aero.M, mhdOut.M), engOut.M), rcsOut.M), magT), bell.M)
   // Tower/arm collision must not depend on the guidance phase: a misaligned or lost ship still hits
   // Mechazilla instead of passing through it.
   const contactOn = hBase < 260 && Math.hypot(relPad.x, relPad.y) < 300

@@ -133,7 +133,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "gateLat", kind: "number", min: 1, max: 12, default: 4.5, unit: "m/s²", group: "gate", description: "Design lateral authority used to size the gate." },
   { key: "flipDv", kind: "number", min: 5, max: 70, default: 35, unit: "m/s", group: "gate", description: "Vertical Δv the flip rotation is assumed to spend." },
   { key: "flipFall", kind: "number", min: 2, max: 10, default: 5.9, unit: "s", group: "gate", description: "Ballistic fall time during the flip per m/s of sink." },
-  { key: "landingEngines", kind: "integer", min: 2, max: 2, default: 2, unit: "", group: "landing", description: "Sea-level Raptors from the flip to the pins (hard rule: 2)." },
+  { key: "landingEngines", kind: "integer", min: 2, max: 3, default: 2, unit: "", group: "landing", description: "Sea-level Raptors from the flip to the pins (3 gives more brake/lateral authority; the final gate is faster)." },
   { key: "contactSpeed", kind: "number", min: 0.2, max: 1.2, default: 0.7, unit: "m/s", group: "landing", description: "Design contact speed at the pins." },
   { key: "landingWn", kind: "number", min: 0.5, max: 4, default: 1.7, unit: "rad/s", group: "landing", description: "Landing attitude loop natural frequency (pointing)." },
   { key: "landingZeta", kind: "number", min: 0.5, max: 1.5, default: 0.9, unit: "", group: "landing", description: "Landing attitude loop damping." },

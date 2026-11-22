@@ -169,6 +169,13 @@ export interface PredInput {
   readonly bankHigh: number
   readonly impulse?: { readonly t: number; readonly dv: number } // retrograde Δv (planning)
   readonly mhdDragScale?: number // online estimate: actual / tabulated MHD drag
+  /** online estimate: actual / tabulated MHD lift (separate — the lift is not proportional to the drag) */
+  readonly mhdLiftScale?: number
+  /** online estimate: measured / tabulated aero force (Cp/Knudsen/friction bias); scales CL and CD */
+  readonly aeroScale?: number
+  /** separate measured/table lift and drag scales (the combined force ratio is drag-dominated) */
+  readonly aeroScaleL?: number
+  readonly aeroScaleD?: number
   readonly bankSign?: number // ±1: fly the signed bank (lateral lift included); undefined: vertical component only
   readonly tRev?: number // absolute time of the one planned bank reversal (high-α; default never)
   readonly sigma0?: number // signed bank flown now; the bank slews from it at sigmaRate
@@ -194,6 +201,8 @@ export interface PredOut {
   readonly lon: number
   readonly downrangeErr: number // + = overshoot of the pad
   readonly crossrangeErr: number // + = right of track
+  /** crossrange velocity at the end state (ECEF, along the same right axis), m/s */
+  readonly crossVel: number
   readonly qMax: number
   readonly gMax: number
   readonly tEntry: number // time at 120 km
@@ -266,7 +275,9 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
         const at0 = atmosphere(h)
         const M0 = V0 / at0.a
         const co0 = aeroLookup(c.aero, passiveTrim(c.aero, M0), M0)
-        bankH = dampedBank(inp.bankHigh, { h, hdot: dot(upG, vr0), V: V0, r: norm(r), q: 0.5 * at0.rho * V0 * V0, CL: co0.CL, CD: co0.CD, mass: inp.mass }, c.sref, c.glideZeta, GLIDE_DAMPING.descentMargin)
+        const asL0 = inp.aeroScaleL ?? inp.aeroScale ?? 1
+        const asD0 = inp.aeroScaleD ?? inp.aeroScale ?? 1
+        bankH = dampedBank(inp.bankHigh, { h, hdot: dot(upG, vr0), V: V0, r: norm(r), q: 0.5 * at0.rho * V0 * V0, CL: co0.CL * asL0, CD: co0.CD * asD0, mass: inp.mass }, c.sref, c.glideZeta, GLIDE_DAMPING.descentMargin)
       }
     }
     if (signedPhase) {
@@ -310,12 +321,18 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
       // belly flop: zero net lift (footprint centre) unless the signed bank law is flown through it
       const liftOn = phase !== "belly" || signedPhase
       const co = aeroLookup(c.aero, alpha, M)
-      const mhdOn = phase === "entry" || phase === "loft" || phase === "coast"
+      // The coil is still energised through most of the high-α phase (it discharges at ~35 km), so
+      // the MHD lift/drag must be in the prediction there too. Omitting it made the range plan for
+      // the 500 s high-α window ~780 km wrong even though the aero table matched the plant.
+      const mhdOn = phase === "entry" || phase === "loft" || phase === "coast" || phase === "highAlpha"
       const ms = inp.mhdDragScale ?? 1
+      const msL = inp.mhdLiftScale ?? ms
+      const asL = inp.aeroScaleL ?? inp.aeroScale ?? 1
+      const asD = inp.aeroScaleD ?? inp.aeroScale ?? 1
       const dCD = mhdOn ? mhdDragLookup(c.mhdDrag, hh, V) * ms : 0
-      const dCL = mhdOn ? mhdLiftLookup(c.mhdDrag, hh, V) * ms : 0
-      const D = q * c.sref * (co.CD + dCD)
-      const L = liftOn ? q * c.sref * (co.CL + dCL) : 0
+      const dCL = mhdOn ? mhdLiftLookup(c.mhdDrag, hh, V) * msL : 0
+      const D = q * c.sref * (co.CD * asD + dCD)
+      const L = liftOn ? q * c.sref * (co.CL * asL + dCL) : 0
       const vh = scale(vr, 1 / V)
       const up = normalize(rr)
       const upPerp = normalize(sub(up, scale(vh, dot(up, vh))))
@@ -366,7 +383,7 @@ export const predict = (c: PredContext, inp: PredInput): PredOut => {
   const right = cross(hdg, up)
   return {
     t, r, v, vRel, lat: g.lat, lon: g.lon,
-    downrangeErr: dot(dH, hdg), crossrangeErr: dot(dH, right),
+    downrangeErr: dot(dH, hdg), crossrangeErr: dot(dH, right), crossVel: dot(vRel, right),
     qMax, gMax, tEntry, path, pitch,
   }
 }

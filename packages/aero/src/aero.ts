@@ -30,6 +30,8 @@ export interface AeroModel {
   readonly wetted: number
   /** optional deployable aft flaps; null on the flown baseline */
   readonly aftFlaps: AftFlapSet | null
+  /** open-base gimballed-bell fins; null when the base is closed (the flown baseline) */
+  readonly bellFins: import("@ship/craft").BellFinDesign | null
 }
 
 export const makeAeroModel = (v: VehicleConfig): AeroModel => {
@@ -44,7 +46,7 @@ export const makeAeroModel = (v: VehicleConfig): AeroModel => {
   }
   const wetted = panels.filter((p) => p.station >= 0).reduce((s, p) => s + p.area, 0)
   const R = v.shape.p.radius
-  return { panels, strips, sref: Math.PI * R * R, lref: v.shape.p.length, baseArea: Math.PI * R * R, wetted, aftFlaps: v.aftFlaps }
+  return { panels, strips, sref: Math.PI * R * R, lref: v.shape.p.length, baseArea: Math.PI * R * R, wetted, aftFlaps: v.aftFlaps, bellFins: v.bellFins }
 }
 
 const CA0_M = [0, 0.6, 0.8, 0.95, 1.05, 1.2, 1.5, 2, 3, 4, 6, 10]
@@ -185,7 +187,11 @@ export const aeroWrench = (m: AeroModel, inp: AeroInput): AeroOut => {
         mz += rx * dN * ux
       }
     }
-    const ca0 = interp1(CA0_M, CA0_V, mach) - (inp.enginesOn ? interp1(CA0_M, CAB_V, mach) : 0)
+    // The engines fill the base when firing (base drag removed). An open, vented base raises the base
+    // pressure, so it keeps only `baseDragFactor` of the sealed-cavity base drag.
+    const cab = interp1(CA0_M, CAB_V, mach)
+    const baseScale = inp.enginesOn ? 0 : m.bellFins ? m.bellFins.baseDragFactor : 1
+    const ca0 = interp1(CA0_M, CA0_V, mach) - (1 - baseScale) * cab
     const ca = vAir.x >= 0 ? ca0 : 0.8
     const cosA = vAir.x / V
     const fx = -ca * q * m.sref * cosA * Math.abs(cosA)

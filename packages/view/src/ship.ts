@@ -95,8 +95,11 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   }
   const hidden = new Set<string>()
   // ---- hull profile (dense near the nose)
+  // Open engine bay: the hull stops at the aft skirt frame so the Raptor bells are exposed and can
+  // gimbal as aero fins. Below this station only the thrust structure and the engines are drawn.
+  const X_OPEN = 5.5
   const xs: number[] = []
-  for (let i = 0; i <= 80; i++) xs.push((i / 80) * (L - 14))
+  for (let i = 0; i <= 80; i++) xs.push(X_OPEN + (i / 80) * (L - 14 - X_OPEN))
   for (let i = 1; i <= 100; i++) xs.push(L - 14 + 14 * (1 - Math.cos((i / 100) * (Math.PI / 2))))
   const prof = xs.map((x) => new THREE.Vector2(Math.max(v.shape.r(Math.min(x, L - 1e-4)), 1e-3), x))
   prof.push(new THREE.Vector2(0, L))
@@ -163,6 +166,27 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       cone.renderOrder = 5
       g.add(cone)
       plumes.push({ mesh: cone, mat, len: rp.length, exitR: rp.exitR })
+      // Gimballed bell-fin shroud: a short duct around the exit that moves with the gimbal, so
+      // tilting the bell turns more base flow than the bare nozzle (the ductFactor in the model).
+      if (v.bellFins) {
+        const bb = new THREE.Box3().setFromObject(rp.group)
+        const duct = new THREE.Mesh(
+          new THREE.CylinderGeometry(rp.exitR * 1.22, rp.exitR * 1.06, 1.2, 24, 1, true),
+          MAT.steelDarkShell,
+        )
+        duct.rotation.z = Math.PI / 2
+        duct.position.x = bb.min.x - 0.35
+        duct.castShadow = true
+        g.add(duct)
+        // three radial splitter vanes on the shroud
+        for (let k = 0; k < 3; k++) {
+          const a2 = (k * 2 * Math.PI) / 3
+          const vane = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.04, rp.exitR * 0.45), MAT.steelDark)
+          vane.position.set(bb.min.x - 0.35, Math.cos(a2) * rp.exitR * 1.1, Math.sin(a2) * rp.exitR * 1.1)
+          vane.rotation.x = -a2
+          g.add(vane)
+        }
+      }
       slGroups.push(g)
     }
     layer("engines").add(g)

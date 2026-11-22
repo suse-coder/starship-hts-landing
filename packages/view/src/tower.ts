@@ -691,6 +691,17 @@ const carriage = (): Member[] => {
     }
   }
   for (const [cx, cy] of CORNERS) for (const z of [CA.z0 + 1.8, CA.z1 - 1.8]) out.push(box("rail", TW.e + cx * 6.7, TW.n + cy * 6.7, z, 1, 1, 2.4))
+  // yellow walkway railing around the carriage top platform (the real tower has one at every level)
+  const RS = CA.r + 0.05, rU = CA.z1 + 0.1
+  out.push(box("yellow", TW.e + RS, TW.n, rU, 0.07, 2 * RS, 0.07))
+  out.push(box("yellow", TW.e - RS, TW.n, rU, 0.07, 2 * RS, 0.07))
+  out.push(box("yellow", TW.e, TW.n + RS, rU, 2 * RS, 0.07, 0.07))
+  out.push(box("yellow", TW.e, TW.n - RS, rU, 2 * RS, 0.07, 0.07))
+  for (let d = -RS; d <= RS + 0.01; d += 3.05) {
+    for (const [ex, ny] of [[TW.e + RS, TW.n + d], [TW.e - RS, TW.n + d], [TW.e + d, TW.n + RS], [TW.e + d, TW.n - RS]] as const) {
+      out.push(box("yellow", ex, ny, rU - 0.55, 0.07, 0.07, 1.1))
+    }
+  }
   const di = TW.half + 0.25, dO = R + g / 2, dz0 = CA.z1 - 0.2, dz1 = CA.z1
   out.push(
     block("grate", TW.e - dO, TW.e + dO, TW.n + di, TW.n + dO, dz0, dz1), block("grate", TW.e - dO, TW.e + dO, TW.n - dO, TW.n - di, dz0, dz1),
@@ -801,6 +812,13 @@ const armMembers = (s: 1 | -1): Member[] => {
   // not a full-width slab, so the outer top chord and the V below stay visible
   out.push(ab("rail", 0.1, 0.98, TIP_N + 0.15, ROOT_N, top - 0.32, top))
   for (let n = ROOT_N - 2.4; n > TIP_N + 1; n -= 4.68) out.push(ab("towerDark", 0.1, 0.98, n - 0.08, n + 0.08, top - 0.36, top - 0.02))
+  // White catch shoes at the tips: the real Mechazilla arms end in a white fairing/guide around the
+  // rail, with a yellow/black stripe on the outer end. Purely visual: the contact envelope (inner
+  // face at o = 0, rail top at TOWER.armHeight) is untouched.
+  out.push(ab("white", 0.06, W + 0.12, TIP_N + 0.15, TIP_N + 2.4, top - 1.55, top - 0.06))
+  out.push(ab("safety", 0.06, W + 0.12, TIP_N - 0.06, TIP_N + 0.17, top - 1.5, top - 0.12))
+  out.push(bar("white", at(0.5, TIP_N + 2.35, top - 1.45), at(0.95, TIP_N + 3.3, top - 2.15), 0.42))
+  out.push(bar("white", at(W - 0.5, TIP_N + 2.35, top - 1.45), at(W - 0.2, TIP_N + 3.3, top - 2.15), 0.42))
   // inner bumper/rub faces over the catch zone (the pads define the inner face at o = 0 exactly)
   for (let k = 0; k < 9; k++) {
     const nc = 7 - k * 2.4

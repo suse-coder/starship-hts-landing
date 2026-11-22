@@ -9,8 +9,10 @@ import { createView, marginColor, rainbow, type CameraMode, type TreeNode } from
 import { steelYieldRetention, THERMAL_LIMITS } from "@ship/heat"
 import { renderSurvival, survival } from "./survival"
 import { isSlowed, playbackRate } from "./playback"
+import { TOWER } from "@ship/tower"
 import { SIM_VERSION } from "virtual:sim-version"
 import { clearCached, fnv1a, loadCached, storeCached } from "./simCache"
+import { loadSnapshot } from "./snapshot"
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const ICON = {
@@ -27,6 +29,7 @@ const ICON = {
 } as const
 for (const [id, k] of [["b-start", "start"], ["b-prev", "prev"], ["b-play", "play"], ["b-stop", "stop"], ["b-next", "next"], ["b-end", "end"], ["n-home", "home"], ["n-fit", "fit"]] as const) $(id).innerHTML = ICON[k]
 const altGraph = $<HTMLCanvasElement>("altgraph")
+const sideCanvas = $<HTMLCanvasElement>("sideview")
 const canvas = $<HTMLCanvasElement>("view")
 const view = createView(canvas, $("labels"), $<HTMLCanvasElement>("viewcube"))
 const PHASE_COLORS = ["#8899aa", "#ff9a3c", "#8899aa", "#ff5a3c", "#ffd23c", "#ff3cbe", "#b07cff", "#3cc8ff", "#ffffff", "#7cff9a", "#7cffd8", "#3cff6e", "#ff3c3c"]
@@ -114,6 +117,18 @@ const simError = (msg: string): void => {
 /** load the cached recording for this physics version, or simulate (?resim forces a new run) */
 const boot = async (force: boolean): Promise<void> => {
   if (!force) {
+    // A precomputed recording (scripts/snapshot.ts, committed as public/recording.bin) is what a
+    // static Pages visitor plays directly — no worker, no re-simulation, no waiting.
+    $("pstatus").textContent = "loading the recorded mission…"
+    const snap = await loadSnapshot()
+    if (snap) {
+      loading = false
+      $("loading").classList.add("hidden")
+      $("loading").classList.remove("error")
+      console.info(`simulation: precomputed recording (${snap.n} samples, ${snap.meta.outcome})`)
+      start(snap)
+      return
+    }
     $("pstatus").textContent = "loading the stored simulation…"
     const cached = await loadCached(cacheKey).catch((e) => {
       console.warn("cache read failed; re-simulating", e)
@@ -207,7 +222,13 @@ explodeBox.onchange = () => {
     view.setExploded(true)
   } else view.setExploded(false)
 }
-$<HTMLSelectElement>("cam").onchange = (e) => view.setMode((e.target as HTMLSelectElement).value as CameraMode)
+$<HTMLSelectElement>("cam").onchange = (e) => {
+  const m = (e.target as HTMLSelectElement).value
+  const side = m === "side"
+  sideCanvas.classList.toggle("on", side)
+  if (!side) view.setMode(m as CameraMode)
+  if (side && rec) { buildSideView(rec); drawSideView(t) }
+}
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement && e.target.type !== "checkbox") return
   if (e.target instanceof HTMLSelectElement) return
@@ -218,7 +239,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") seek(t + (e.shiftKey ? 60 : 5))
   if (e.key === "ArrowLeft") seek(t - (e.shiftKey ? 60 : 5))
 })
-const resize = (): void => { view.resize(); if (rec) buildAltGraph(rec); drawCharts() }
+const resize = (): void => { view.resize(); if (rec) buildAltGraph(rec); if (rec && sideOn()) { buildSideView(rec); drawSideView(t) } drawCharts() }
 window.addEventListener("resize", resize)
 $("results-head").addEventListener("click", () => {
   const p = $("results")
@@ -457,20 +478,146 @@ const phaseAt = (tt: number): string => {
   return PHASE_LABEL[cur] ?? cur
 }
 
+// ---------------- 2D side view: full path + final 2 km ----------------
+let sideBase: HTMLCanvasElement | null = null
+const sideOn = (): boolean => sideCanvas.classList.contains("on")
+const sideText = (g: CanvasRenderingContext2D, text: string, x: number, y: number, align: CanvasTextAlign, fill = "#dff3ff", size = 10): void => altText(g, text, x, y, align, fill, size)
+
+/** base layer: both panels, full path, tower/arms/100 m band, static */
+const buildSideView = (r: Recording): void => {
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const w = Math.max(360, sideCanvas.clientWidth || 1200)
+  const h = Math.max(240, sideCanvas.clientHeight || 700)
+  sideCanvas.width = Math.round(w * dpr); sideCanvas.height = Math.round(h * dpr)
+  const c = document.createElement("canvas"); c.width = sideCanvas.width; c.height = sideCanvas.height
+  const g = c.getContext("2d")!
+  g.setTransform(dpr, 0, 0, dpr, 0, 0)
+  g.fillStyle = "rgba(4,10,18,0.9)"; g.fillRect(0, 0, w, h)
+  const pe = r.data[CH.pe], pn = r.data[CH.pn], pu = r.data[CH.alt]
+  const full = { x0: 56, y0: 42, x1: Math.round(w * 0.55), y1: h - 46 }
+  const zoom = { x0: Math.round(w * 0.58), y0: 42, x1: w - 26, y1: h - 46 }
+  sideText(g, "FULL PATH", full.x0, 18, "left", "#dff3ff", 12)
+  sideText(g, "altitude vs distance to the catch", full.x0 + 88, 18, "left", "#8fb6cc", 10)
+  sideText(g, "FINAL 10 km", zoom.x0, 18, "left", "#dff3ff", 12)
+  sideText(g, "last 10 km · north offset vs height (arms 112 m)", zoom.x0 + 82, 18, "left", "#8fb6cc", 10)
+  // ---- full path
+  let rmax = 1, umax = 1
+  for (let i = 0; i < r.n; i++) { const rr = Math.hypot(pe[i], pn[i]); if (rr > rmax) rmax = rr; if (pu[i] > umax) umax = pu[i] }
+  const FX = (rr: number): number => full.x1 - (rr / rmax) * (full.x1 - full.x0)
+  const FY = (u: number): number => full.y1 - Math.max(u, 0) / umax * (full.y1 - full.y0)
+  g.strokeStyle = "rgba(120,150,170,0.45)"; g.lineWidth = 1
+  g.strokeRect(full.x0, full.y0, full.x1 - full.x0, full.y1 - full.y0)
+  for (let k = 1; k < 4; k++) {
+    const yy = full.y0 + ((full.y1 - full.y0) * k) / 4
+    g.strokeStyle = "rgba(120,150,170,0.14)"; g.beginPath(); g.moveTo(full.x0, yy); g.lineTo(full.x1, yy); g.stroke()
+  }
+  sideText(g, `${(umax / 1e3).toFixed(0)} km`, full.x0 - 4, full.y0 + 1, "right", "#9fb8c8", 9)
+  sideText(g, "0", full.x0 - 4, full.y1, "right", "#9fb8c8", 9)
+  sideText(g, "0 (catch) →", full.x1, full.y1 + 12, "right", "#9fb8c8", 9)
+  sideText(g, `${(rmax / 1e3).toFixed(0)} km to catch`, full.x0, full.y1 + 12, "left", "#9fb8c8", 9)
+  const step = Math.max(1, Math.floor(r.n / 900))
+  g.beginPath()
+  for (let i = 0; i < r.n; i += step) { const x = FX(Math.hypot(pe[i], pn[i])), y = FY(pu[i]); if (i === 0) g.moveTo(x, y); else g.lineTo(x, y) }
+  g.lineJoin = "round"; g.lineCap = "round"
+  g.strokeStyle = "rgba(6,12,20,0.6)"; g.lineWidth = 3.4; g.stroke()
+  g.strokeStyle = "rgba(90,200,255,0.45)"; g.lineWidth = 1.4; g.stroke()
+  // tower marker at zero range
+  g.strokeStyle = "#cfd8e0"; g.lineWidth = 1.5
+  g.beginPath(); g.moveTo(full.x1, full.y0); g.lineTo(full.x1, full.y1); g.stroke()
+  sideText(g, "tower", full.x1 - 4, full.y0 - 6, "right", "#cfd8e0", 9)
+  // ---- final 2 km
+  // 5 km window: the user wants the end of the approach visible together with the tower (the
+  // overshoot is hundreds of metres to kilometres, not tens)
+  const nmin = -5000, nmax = 5000, zumax = 5000
+  const ZX = (n: number): number => zoom.x0 + ((n - nmin) / (nmax - nmin)) * (zoom.x1 - zoom.x0)
+  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / zumax) * (zoom.y1 - zoom.y0)
+  g.strokeStyle = "rgba(120,150,170,0.45)"; g.lineWidth = 1
+  g.strokeRect(zoom.x0, zoom.y0, zoom.x1 - zoom.x0, zoom.y1 - zoom.y0)
+  // 100 m band around the catch
+  g.fillStyle = "rgba(90,240,160,0.10)"; g.fillRect(ZX(-100), zoom.y0, ZX(100) - ZX(-100), zoom.y1 - zoom.y0)
+  g.strokeStyle = "rgba(90,240,160,0.5)"; g.setLineDash([4, 4])
+  g.beginPath(); g.moveTo(ZX(-100), zoom.y0); g.lineTo(ZX(-100), zoom.y1); g.moveTo(ZX(100), zoom.y0); g.lineTo(ZX(100), zoom.y1); g.stroke()
+  g.setLineDash([])
+  sideText(g, "±100 m", ZX(0), zoom.y1 + 12, "center", "#7cf0b0", 9)
+  // ground, tower column, arms, catch
+  g.strokeStyle = "rgba(160,180,195,0.7)"; g.beginPath(); g.moveTo(zoom.x0, ZY(0)); g.lineTo(zoom.x1, ZY(0)); g.stroke()
+  g.fillStyle = "rgba(200,210,220,0.85)"
+  const tw = Math.max(2.5, ZX(TOWER.pos.y + 6) - ZX(TOWER.pos.y - 6))
+  g.fillRect(ZX(TOWER.pos.y) - tw / 2, ZY(146), tw, ZY(0) - ZY(146))
+  g.fillStyle = "#e8eef4"
+  g.fillRect(ZX(-17), ZY(TOWER.armHeight) - 3, Math.max(3, ZX(21) - ZX(-17)), 6)
+  g.beginPath(); g.arc(ZX(0), ZY(TOWER.armHeight), 4, 0, Math.PI * 2); g.fillStyle = "#5af0a0"; g.fill()
+  sideText(g, "tower", ZX(TOWER.pos.y) + tw / 2 + 4, ZY(120), "left", "#cfd8e0", 9)
+  sideText(g, "arms", ZX(21) + 4, ZY(TOWER.armHeight) + 14, "left", "#cfd8e0", 9)
+  sideText(g, "catch", ZX(0) + 6, ZY(TOWER.armHeight) - 12, "left", "#7cf0b0", 9)
+  sideText(g, "0", ZX(0), zoom.y1 + 12, "center", "#9fb8c8", 9)
+  sideText(g, `${nmax} m`, zoom.x1, zoom.y1 + 24, "right", "#9fb8c8", 9)
+  sideText(g, `${nmin} m`, zoom.x0, zoom.y1 + 24, "left", "#9fb8c8", 9)
+  sideText(g, `${zumax} m`, zoom.x0 - 4, zoom.y0 + 1, "right", "#9fb8c8", 9)
+  // path in the zoom (only samples near the pad)
+  g.beginPath(); let started = false
+  for (let i = 0; i < r.n; i += step) {
+    if (Math.abs(pn[i]) > 5200) continue
+    const x = ZX(pn[i]), y = ZY(pu[i])
+    if (!started) { g.moveTo(x, y); started = true } else g.lineTo(x, y)
+  }
+  g.strokeStyle = "rgba(6,12,20,0.6)"; g.lineWidth = 3.4; g.stroke()
+  g.strokeStyle = "rgba(90,200,255,0.8)"; g.lineWidth = 1.5; g.stroke()
+  sideBase = c
+}
+
+/** per-tick layer: flown path + current markers + live miss */
+const drawSideView = (tt: number): void => {
+  if (!rec || !sideBase) return
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const w = sideCanvas.clientWidth || 1200, h = sideCanvas.clientHeight || 700
+  const g = sideCanvas.getContext("2d")!
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, sideCanvas.width, sideCanvas.height)
+  g.drawImage(sideBase, 0, 0)
+  g.setTransform(dpr, 0, 0, dpr, 0, 0)
+  const r = rec, pe = r.data[CH.pe], pn = r.data[CH.pn], pu = r.data[CH.alt]
+  const tArr = r.data[CH.t]
+  let i = 0
+  while (i + 1 < r.n && tArr[i + 1] <= tt) i++
+  const full = { x0: 56, y0: 42, x1: Math.round(w * 0.55), y1: h - 46 }
+  const zoom = { x0: Math.round(w * 0.58), y0: 42, x1: w - 26, y1: h - 46 }
+  let rmax = 1, umax = 1
+  for (let k = 0; k < r.n; k++) { const rr = Math.hypot(pe[k], pn[k]); if (rr > rmax) rmax = rr; if (pu[k] > umax) umax = pu[k] }
+  const FX = (rr: number): number => full.x1 - (rr / rmax) * (full.x1 - full.x0)
+  const FY = (u: number): number => full.y1 - Math.max(u, 0) / umax * (full.y1 - full.y0)
+  const ZX = (n: number): number => zoom.x0 + ((n + 5000) / 10000) * (zoom.x1 - zoom.x0)
+  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / 5000) * (zoom.y1 - zoom.y0)
+  // flown part, brighter
+  const step = Math.max(1, Math.floor(r.n / 900))
+  g.beginPath()
+  for (let k = 0; k <= i; k += step) { const x = FX(Math.hypot(pe[k], pn[k])), y = FY(pu[k]); if (k === 0) g.moveTo(x, y); else g.lineTo(x, y) }
+  g.strokeStyle = "#69d2ff"; g.lineWidth = 1.8; g.stroke()
+  const range = Math.hypot(pe[i], pn[i]), alt = pu[i]
+  for (const [x, y] of [[FX(range), FY(alt)], [ZX(pn[i]), ZY(pu[i])]] as const) {
+    g.beginPath(); g.arc(x, y, 4.4, 0, Math.PI * 2); g.fillStyle = "rgba(6,12,20,0.6)"; g.fill()
+    g.beginPath(); g.arc(x, y, 3.0, 0, Math.PI * 2); g.fillStyle = "#ff9a3c"; g.fill()
+    g.strokeStyle = "#fff"; g.lineWidth = 1.4; g.stroke()
+  }
+  sideText(g, `${(range / 1e3).toFixed(2)} km · ${(alt / 1e3).toFixed(2)} km`, FX(range) + 8, FY(alt) - 10, "left", "#ffd9b0", 10)
+  sideText(g, `${pn[i].toFixed(0)} m north · ${alt.toFixed(0)} m`, ZX(pn[i]) + 8, ZY(pu[i]) - 10, "left", "#ffd9b0", 10)
+  if (Math.abs(pn[i]) <= 100 && Math.abs(pe[i]) <= 100) sideText(g, "INSIDE 100 m", ZX(0), zoom.y0 + 14, "center", "#7cf0b0", 11)
+}
+
 // ---------------- altitude sparkline (transparent, top right) ----------------
 let altBase: HTMLCanvasElement | null = null
 let altMax = 1
+let rMaxKm = 1
 const ALT_L = 40, ALT_R = 4, ALT_T = 12, ALT_B = 10
 /** white text with a dark outline: readable over both the white sky and black space */
-const altText = (g: CanvasRenderingContext2D, text: string, x: number, y: number, align: CanvasTextAlign): void => {
-  g.font = "10px system-ui, sans-serif"
+const altText = (g: CanvasRenderingContext2D, text: string, x: number, y: number, align: CanvasTextAlign, fill = "#f7fbff", size = 10): void => {
+  g.font = `${size}px system-ui, sans-serif`
   g.textAlign = align
   g.textBaseline = "middle"
   g.lineJoin = "round"
   g.lineWidth = 3
   g.strokeStyle = "rgba(6,12,20,0.78)"
   g.strokeText(text, x, y)
-  g.fillStyle = "#f7fbff"
+  g.fillStyle = fill
   g.fillText(text, x, y)
 }
 const buildAltGraph = (r: Recording): void => {
@@ -502,6 +649,28 @@ const buildAltGraph = (r: Recording): void => {
   g.strokeStyle = "rgba(6,12,20,0.55)"; g.lineWidth = 4; g.stroke()
   g.strokeStyle = "rgba(248,252,255,0.85)"; g.lineWidth = 2.6; g.stroke()
   g.strokeStyle = "#0696d7"; g.lineWidth = 1.4; g.stroke()
+  // ---- second profile: height vs km to the catch point (violet), with its own reversed top axis
+  const pe = r.data[CH.pe], pn = r.data[CH.pn]
+  let rMax = 0
+  for (let i = 0; i < r.n; i++) rMax = Math.max(rMax, Math.hypot(pe[i], pn[i]))
+  rMaxKm = Math.max(1, rMax / 1e3)
+  const XR = (km: number): number => ALT_L + (1 - km / rMaxKm) * (w - ALT_L - ALT_R)
+  g.beginPath()
+  for (let i = 0; i < r.n; i += step) {
+    const x = XR(Math.hypot(pe[i], pn[i]) / 1e3), y = Y(alt[i])
+    if (i === 0) g.moveTo(x, y)
+    else g.lineTo(x, y)
+  }
+  g.strokeStyle = "rgba(6,12,20,0.55)"; g.lineWidth = 4; g.stroke()
+  g.strokeStyle = "rgba(248,252,255,0.7)"; g.lineWidth = 2.6; g.stroke()
+  g.strokeStyle = "#b48cff"; g.lineWidth = 1.4; g.stroke()
+  // top x-axis: 0 km at the right (the catch point), max range at the left
+  g.strokeStyle = "rgba(180,140,255,0.55)"; g.lineWidth = 1
+  g.beginPath(); g.moveTo(ALT_L, ALT_T - 3.5); g.lineTo(w - ALT_R, ALT_T - 3.5); g.stroke()
+  altText(g, "0", w - ALT_R, ALT_T - 9, "right", "#c9a6ff", 9)
+  altText(g, `${rMaxKm.toFixed(0)} km to target`, ALT_L, ALT_T - 9, "left", "#c9a6ff", 9)
+  altText(g, "alt / time", ALT_L + 2, h - 3, "left", "#69c3ef", 8.5)
+  altText(g, "alt / km", w - ALT_R - 2, h - 3, "right", "#c9a6ff", 8.5)
   altBase = c
 }
 /** marker + current altitude label; called on the UI tick */
@@ -524,6 +693,15 @@ const drawAltGraph = (tt: number): void => {
   g.beginPath(); g.arc(x, y, 3.2, 0, Math.PI * 2); g.fillStyle = "#ff9a3c"; g.fill()
   g.strokeStyle = "#ffffff"; g.lineWidth = 1.5; g.stroke()
   altText(g, alt > 1000 ? `${(alt / 1000).toFixed(1)} km` : `${alt.toFixed(0)} m`, w - ALT_R - 2, ALT_T + 1, "right")
+  // current point on the height-vs-km curve (same altitude, range x) with its own readout
+  if (rec) {
+    const km = Math.hypot(valueAt(rec, "pe", tt), valueAt(rec, "pn", tt)) / 1e3
+    const xr = ALT_L + (1 - km / rMaxKm) * (w - ALT_L - ALT_R)
+    g.beginPath(); g.arc(xr, y, 4.2, 0, Math.PI * 2); g.fillStyle = "rgba(6,12,20,0.55)"; g.fill()
+    g.beginPath(); g.arc(xr, y, 2.9, 0, Math.PI * 2); g.fillStyle = "#b48cff"; g.fill()
+    g.strokeStyle = "#ffffff"; g.lineWidth = 1.4; g.stroke()
+    altText(g, `${km.toFixed(0)} km`, xr, y - 9, km > rMaxKm * 0.5 ? "left" : "right", "#c9a6ff", 9)
+  }
 }
 
 const start = (r: Recording): void => {
@@ -539,6 +717,7 @@ const start = (r: Recording): void => {
   buildEvents()
   buildTracks()
   buildAltGraph(r)
+  if (sideOn()) { buildSideView(r); drawSideView(0) }
   const sv = $("survival")
   sv.innerHTML = ""
   const svr = survival(r)
@@ -606,6 +785,7 @@ const loop = (now: number): void => {
       updateTelemetry()
       drawCursor()
       drawAltGraph(t)
+      if (sideOn()) drawSideView(t)
       const slow = isSlowed(phaseIdAt(t), Number($<HTMLSelectElement>("speed").value), Number($<HTMLSelectElement>("landing-speed").value))
       $("phase-name").textContent = phaseAt(t) + (slow ? "  ·  slow motion ×" + $<HTMLSelectElement>("landing-speed").value : "")
       $("clock").textContent = `${new Date(epochMs() + t * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`

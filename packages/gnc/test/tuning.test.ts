@@ -66,7 +66,9 @@ describe("MissionTuning validation", () => {
     expect(() => MissionTuning.decode({ gateMiss: Number.NaN })).toThrow(TuningError)
     expect(() => MissionTuning.decode({ gateMiss: 10 })).toThrow(TuningError)
     expect(() => MissionTuning.decode({ landingEngines: 3.5 })).toThrow(TuningError)
-    expect(() => MISSION_TUNING_DEFAULT.with({ landingEngines: 3 })).toThrow(TuningError)
+    expect(() => MISSION_TUNING_DEFAULT.with({ landingEngines: 4 })).toThrow(TuningError)
+    // 3 engines are allowed when the 2-engine authority is not enough (the final gate is faster)
+    expect(MISSION_TUNING_DEFAULT.with({ landingEngines: 3 }).landingEngines).toBe(3)
   })
 
   test("decode accepts a partial JSON object and fills the defaults", () => {

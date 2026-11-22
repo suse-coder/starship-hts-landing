@@ -105,6 +105,9 @@ export const flyBelly = (hand: FastHandover, pred: PredContext, T: MissionTuning
     windOfs: v3(0, 0, 0), aero: pred.aero, sref: pred.sref,
     windForecast: pred.windForecast ?? (() => v3(0, 0, 0)),
   }
+  // Position-only objective here: this evaluator's 3-DOF landing has ideal lateral authority and no
+  // propellant budget, so it measures the belly's *reach*, not the 6-DOF catch. The flight's
+  // steepGlide adds the landing ZEM and the lateral-velocity penalty (guidance.ts endToEndMiss).
   const miss = (a: number, tau: number, b2: number): number => {
     const e = bellyEnd(b, a, tau, b2, hand.psi0, planH, rate, alignH)
     return Math.hypot(e.x - T.bellyAimE, e.y - T.bellyAimN)
