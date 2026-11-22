@@ -585,22 +585,98 @@ const drawSideView = (tt: number): void => {
   for (let k = 0; k < r.n; k++) { const rr = Math.hypot(pe[k], pn[k]); if (rr > rmax) rmax = rr; if (pu[k] > umax) umax = pu[k] }
   const FX = (rr: number): number => full.x1 - (rr / rmax) * (full.x1 - full.x0)
   const FY = (u: number): number => full.y1 - Math.max(u, 0) / umax * (full.y1 - full.y0)
-  const ZX = (n: number): number => zoom.x0 + ((n + 2500) / 5000) * (zoom.x1 - zoom.x0)
-  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / 2500) * (zoom.y1 - zoom.y0)
-  // flown part, brighter
   const step = Math.max(1, Math.floor(r.n / 900))
+  // ---- left: full path + the flown part + the current marker
+  g.strokeStyle = "#69d2ff"; g.lineWidth = 1.8
   g.beginPath()
   for (let k = 0; k <= i; k += step) { const x = FX(Math.hypot(pe[k], pn[k])), y = FY(pu[k]); if (k === 0) g.moveTo(x, y); else g.lineTo(x, y) }
-  g.strokeStyle = "#69d2ff"; g.lineWidth = 1.8; g.stroke()
+  g.stroke()
   const range = Math.hypot(pe[i], pn[i]), alt = pu[i]
-  for (const [x, y] of [[FX(range), FY(alt)], [ZX(pn[i]), ZY(pu[i])]] as const) {
+  {
+    const x = FX(range), y = FY(alt)
     g.beginPath(); g.arc(x, y, 4.4, 0, Math.PI * 2); g.fillStyle = "rgba(6,12,20,0.6)"; g.fill()
     g.beginPath(); g.arc(x, y, 3.0, 0, Math.PI * 2); g.fillStyle = "#ff9a3c"; g.fill()
     g.strokeStyle = "#fff"; g.lineWidth = 1.4; g.stroke()
+    sideText(g, `${(range / 1e3).toFixed(2)} km · ${(alt / 1e3).toFixed(2)} km`, x + 8, y - 10, "left", "#ffd9b0", 10)
   }
-  sideText(g, `${(range / 1e3).toFixed(2)} km · ${(alt / 1e3).toFixed(2)} km`, FX(range) + 8, FY(alt) - 10, "left", "#ffd9b0", 10)
-  sideText(g, `${pn[i].toFixed(0)} m north · ${alt.toFixed(0)} m`, ZX(pn[i]) + 8, ZY(pu[i]) - 10, "left", "#ffd9b0", 10)
-  if (Math.abs(pn[i]) <= 100 && Math.abs(pe[i]) <= 100) sideText(g, "INSIDE 100 m", ZX(0), zoom.y0 + 14, "center", "#7cf0b0", 11)
+  // ---- right: the tower AND the path/plan together. A fixed window cannot do that when the ship
+  // misses by kilometres, so the half-width follows the larger of the ship and the planned terminal
+  // point (minimum 2.5 km). Both lines must be visible in the same frame as the tower.
+  const prev = r.pred, pk = r.predK, hasP = r.predHas
+  let nWin = Math.max(2500, Math.abs(pn[i]) * 1.15)
+  if (hasP[i]) {
+    const b0 = i * pk * 3
+    for (let k = 0; k < pk; k++) nWin = Math.max(nWin, Math.abs(prev[b0 + k * 3 + 1]) * 1.15)
+  }
+  nWin = Math.min(nWin, 20000)
+  const zx0 = zoom.x0, zx1 = zoom.x1, zy0 = zoom.y0, zy1 = zoom.y1
+  g.fillStyle = "rgba(4,10,18,0.94)"; g.fillRect(zx0 - 2, zy0 - 22, zx1 - zx0 + 4, zy1 - zy0 + 24)
+  sideText(g, "PLAN & FLOWN AT THE TOWER", zx0, 18, "left", "#dff3ff", 12)
+  sideText(g, `±${(nWin / 1000).toFixed(1)} km · north vs height`, zx0 + 190, 18, "left", "#8fb6cc", 10)
+  const ZX = (n: number): number => zx0 + ((n + nWin) / (2 * nWin)) * (zx1 - zx0)
+  const ZY = (u: number): number => zy1 - (Math.max(u, 0) / 2500) * (zy1 - zy0)
+  g.strokeStyle = "rgba(120,150,170,0.45)"; g.lineWidth = 1
+  g.strokeRect(zx0, zy0, zx1 - zx0, zy1 - zy0)
+  g.fillStyle = "rgba(90,240,160,0.12)"; g.fillRect(ZX(-100), zy0, ZX(100) - ZX(-100), zy1 - zy0)
+  g.strokeStyle = "rgba(90,240,160,0.55)"; g.setLineDash([4, 4])
+  g.beginPath(); g.moveTo(ZX(-100), zy0); g.lineTo(ZX(-100), zy1); g.moveTo(ZX(100), zy0); g.lineTo(ZX(100), zy1); g.stroke()
+  g.setLineDash([])
+  sideText(g, "±100 m", ZX(0), zy1 + 12, "center", "#7cf0b0", 9)
+  g.strokeStyle = "rgba(160,180,195,0.7)"; g.beginPath(); g.moveTo(zx0, ZY(0)); g.lineTo(zx1, ZY(0)); g.stroke()
+  g.fillStyle = "rgba(200,210,220,0.85)"
+  const tw = Math.max(2, ZX(TOWER.pos.y + 6) - ZX(TOWER.pos.y - 6))
+  g.fillRect(ZX(TOWER.pos.y) - tw / 2, ZY(146), tw, ZY(0) - ZY(146))
+  g.fillStyle = "#e8eef4"
+  g.fillRect(ZX(-17), ZY(TOWER.armHeight) - 3, Math.max(3, ZX(21) - ZX(-17)), 6)
+  g.beginPath(); g.arc(ZX(0), ZY(TOWER.armHeight), 4, 0, Math.PI * 2); g.fillStyle = "#5af0a0"; g.fill()
+  sideText(g, "tower", ZX(TOWER.pos.y) + tw / 2 + 4, ZY(100), "left", "#cfd8e0", 9)
+  sideText(g, "catch", ZX(0) + 6, ZY(TOWER.armHeight) - 12, "left", "#7cf0b0", 9)
+  sideText(g, "0", ZX(0), zy1 + 12, "center", "#9fb8c8", 9)
+  sideText(g, `+${(nWin / 1000).toFixed(1)} km`, zx1 - 2, zy1 + 24, "right", "#9fb8c8", 9)
+  sideText(g, `-${(nWin / 1000).toFixed(1)} km`, zx0 + 2, zy1 + 24, "left", "#9fb8c8", 9)
+  // flown path (windowed)
+  {
+    let st = false
+    g.beginPath()
+    for (let k = 0; k <= i; k += step) {
+      if (Math.abs(pn[k]) > nWin) continue
+      const x = ZX(pn[k]), y = ZY(pu[k])
+      if (!st) { g.moveTo(x, y); st = true } else g.lineTo(x, y)
+    }
+    if (st) {
+      g.strokeStyle = "rgba(6,12,20,0.6)"; g.lineWidth = 3.2; g.stroke()
+      g.strokeStyle = "#69d2ff"; g.lineWidth = 1.7; g.stroke()
+    }
+  }
+  // plan (pale, dashed)
+  if (hasP[i]) {
+    const b0 = i * pk * 3
+    let st = false
+    g.beginPath()
+    for (let k = 0; k < pk; k++) {
+      const n = prev[b0 + k * 3 + 1], u = prev[b0 + k * 3 + 2]
+      if (u <= 0 && n === 0) continue
+      const x = ZX(n), y = ZY(u)
+      if (!st) { g.moveTo(x, y); st = true } else g.lineTo(x, y)
+    }
+    if (st) {
+      g.setLineDash([4, 3])
+      g.strokeStyle = "rgba(6,12,20,0.6)"; g.lineWidth = 3; g.stroke()
+      g.strokeStyle = "rgba(220,244,255,0.95)"; g.lineWidth = 1.4; g.stroke()
+      g.setLineDash([])
+    }
+  }
+  // current marker in the window
+  {
+    const x = ZX(pn[i]), y = ZY(pu[i])
+    g.beginPath(); g.arc(x, y, 4.2, 0, Math.PI * 2); g.fillStyle = "rgba(6,12,20,0.55)"; g.fill()
+    g.beginPath(); g.arc(x, y, 2.9, 0, Math.PI * 2); g.fillStyle = "#ff9a3c"; g.fill()
+    g.strokeStyle = "#ffffff"; g.lineWidth = 1.4; g.stroke()
+    const miss = Math.hypot(pe[i], pn[i])
+    sideText(g, `${pn[i].toFixed(0)} m N · ${miss.toFixed(0)} m from catch`, x + 8, y - 10, "left", "#ffd9b0", 9)
+  }
+  sideText(g, "— plan", zx1 - 4, zy1 - 8, "right", "#dcf4ff", 9)
+  sideText(g, "— flown", zx0 + 4, zy1 - 8, "left", "#69d2ff", 9)
 }
 
 // ---------------- altitude sparkline (transparent, top right) ----------------

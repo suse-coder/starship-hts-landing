@@ -13,6 +13,12 @@ export interface AttitudeTarget {
   readonly spin?: number // desired roll rate (rad/s) instead of a roll angle
   readonly free?: V3 // ECI axis left to the aerodynamics (no torque about it), e.g. the α-pitch axis
   readonly bankAxis?: V3 // ECI unit v̂: measure the pointing error as a rotation about v̂ (bank), never through it
+  /**
+   * Angular-rate feed-forward (ECI, rad/s): the rotation rate of the commanded attitude itself. A pure
+   * error-proportional rate command follows a ramp with a lag of 2ζ/ω_n seconds (≈ 1 s here, i.e. 18°
+   * behind a 17°/s slew); with the reference rate added the loop only has to remove the error.
+   */
+  readonly rate?: V3
 }
 
 export interface Gains {
@@ -108,6 +114,12 @@ export const torqueCommand = (q: Q, w: V3, I: V3, t: AttitudeTarget, g: Gains, m
   if (g.axisAccel) {
     const cap = (ei: number, a: number): number => 0.8 * Math.sqrt(2 * a * Math.abs(ei)) + 0.002
     wc = v3(t.spin !== undefined ? wc.x : clamp(wc.x, -cap(e.x, g.axisAccel[0]), cap(e.x, g.axisAccel[0])), clamp(wc.y, -cap(e.y, g.axisAccel[1]), cap(e.y, g.axisAccel[1])), clamp(wc.z, -cap(e.z, g.axisAccel[2]), cap(e.z, g.axisAccel[2])))
+  }
+  if (t.rate) {
+    const rb = qrotInv(q, t.rate)
+    // pitch/yaw only (the roll channel keeps its own target), bounded by the loop's rate limit
+    const ry = clamp(rb.y, -g.wMax, g.wMax), rz = clamp(rb.z, -g.wMax, g.wMax)
+    wc = v3(wc.x, clamp(wc.y + ry, -g.wMax, g.wMax), clamp(wc.z + rz, -g.wMax, g.wMax))
   }
   const Iw = hadamard(I, w)
   const kdRoll = 2 * g.zeta * (g.wnRoll ?? g.wn)

@@ -33,6 +33,11 @@ export interface DesignParams {
    * local dynamic pressure. Absent or `enabled: false` leaves the flown baseline exactly unchanged.
    */
   readonly bellFins?: BellFinDesign
+  /**
+   * Failure injection for the landing: sea-level engine `index` (0–2) loses all thrust `afterFlip`
+   * seconds after the landing-flip ignition and cannot be restarted. Absent = no failure.
+   */
+  readonly engineOut?: { readonly index: number; readonly afterFlip: number }
 }
 
 /**

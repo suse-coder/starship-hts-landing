@@ -11,9 +11,11 @@
  * Float32 pred n×predK×3, Uint8 predHas n.
  */
 import type { Recording } from "@ship/sim"
+import { SIM_VERSION } from "virtual:sim-version"
 
 interface SnapshotHeader {
   readonly format: number
+  readonly version?: string
   readonly n: number
   readonly cells: number
   readonly predK: number
@@ -33,7 +35,14 @@ export const loadSnapshot = async (): Promise<Recording | null> => {
     if (headLen < 2 || 4 + headLen > buf.byteLength) return null
     const text = new TextDecoder().decode(new Uint8Array(buf, 4, headLen))
     const header = JSON.parse(text.slice(0, text.lastIndexOf("}") + 1)) as SnapshotHeader
-    if (header.format !== 1 || !(header.n > 0) || !(header.ch > 0)) return null
+    // Only a recording made from exactly this code may be played. In dev any physics edit changes
+    // SIM_VERSION, so the committed snapshot is ignored and the app re-simulates; on Pages a stale
+    // committed snapshot is likewise ignored rather than shown as if it were this build.
+    if (header.format !== 1 || header.version !== SIM_VERSION) {
+      console.info(`precomputed recording is for ${header.version ?? "an unknown version"}, code is ${SIM_VERSION} — re-simulating`)
+      return null
+    }
+    if (!(header.n > 0) || !(header.ch > 0)) return null
     const { n, cells, predK, ch } = header
     let off = 4 + headLen
     const data: Float64Array[] = []

@@ -123,7 +123,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "aimHigh", kind: "number", min: 0, max: 5e3, default: 900, unit: "m", group: "entry", description: "High-α hand-over downrange bias past the pad (the belly-flop aim)." },
   { key: "glideZeta", kind: "number", min: 0.05, max: 2, default: 0.3, unit: "", group: "entry", description: "High-α altitude-rate damping ratio of the phugoid law." },
   { key: "dvBurn", kind: "number", min: 80, max: 140, default: 108, unit: "m/s", group: "deorbit", description: "Deorbit retrograde Δv target (entry energy)." },
-  { key: "bellyPlanEnd", kind: "number", min: 800, max: 3000, default: 1750, unit: "m", group: "belly", description: "Belly-flop plan end above the catch plane; deliberately decoupled from the flip gate." },
+  { key: "bellyPlanEnd", kind: "number", min: 300, max: 3000, default: 1300, unit: "m", group: "belly", description: "Belly-flop plan end above the catch plane; deliberately decoupled from the flip gate." },
   { key: "bellyBankRateDeg", kind: "number", min: 0.3, max: 6, default: 1.8, unit: "deg/s", group: "belly", description: "Belly-flop lift-heading slew rate about v̂ (cold gas)." },
   { key: "bellyAlignH", kind: "number", min: 300, max: 3000, default: 1800, unit: "m", group: "belly", description: "Altitude window above the flip in which the nose snaps to the N/S catch quadrant." },
   { key: "bellyAimE", kind: "number", min: -800, max: 800, default: 0, unit: "m", group: "belly", description: "Belly-flop plan aim offset east of the catch point." },

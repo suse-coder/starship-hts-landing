@@ -4,16 +4,16 @@ import { makeMhdModel, mhdBasis, type MhdBasis } from "@ship/mhd"
 import { SHOCK_TABLE, lookupStag } from "@ship/gas"
 import { type AttitudeTarget, GAINS, type Gains, torqueCommand } from "./control"
 import { allocateMhd, U_BASE } from "./mhdAlloc"
-import { planLanding, terminalControl, flipAltitude, LATERAL_FIELD_DEFAULT } from "./landing"
+import { flipAltitude } from "./landing"
 export { flipAltitude }
 import { dampedBank, GLIDE_DAMPING, NOSE_FIRST, type GlideState, passiveTrim, pitchUpDue, predict, type PredContext, type PredInput, type PredOut, type PredPhase, solveBank } from "./predictor"
-import { aeroLookup, type AeroTable, mhdDragLookup } from "./tables"
+import { aeroLookup, type AeroTable, landingAero, type LandingAero, mhdDragLookup } from "./tables"
 import { atmosphere } from "@ship/earth"
 import { alphaNoseFirst } from "./schedule"
 import { MISSION_TUNING_DEFAULT, type MissionTuning } from "./tuning"
 import { mhdLiftLookup } from "./tables"
 import { TOWER, bothPinsLoaded } from "@ship/tower"
-import { type DescentPlan, type DescentProblem, type DisturbanceState, fitThrust, G_DESCENT, observeDisturbance, planDescent, quintic, solveDescent, trackDescent } from "./descent"
+import { ENGINE_HEALTH0, type EngineHealth, guideLanding, LANDING_LAW_STATE0, type LandingLawState, monitorEngines, selectEngines, trimThrustLine } from "./landingLaw"
 export { alphaNoseFirst }
 
 /** Mission phases, in order. */
@@ -81,6 +81,12 @@ export interface Nav {
   readonly aeroF: V3
   /** measured MHD force in body axes (N) */
   readonly mhdF: V3
+  /**
+   * Total engine force in body axes (N) from the chamber pressures and the gimbal positions — the
+   * real thrust vector. It is not along the body axis: the gimbals are deflected for control torque
+   * and, with an asymmetric engine set (engine out), canted through the CG.
+   */
+  readonly engF: V3
 }
 
 export interface Mem {
@@ -140,8 +146,17 @@ export interface Mem {
   readonly aeroScaleD: number
   /** measured / tabulated MHD lift (the drag scale does not apply to the lift) */
   readonly mhdLiftScale: number
-  /** powered-descent law state (plan, stage, disturbance observer); null before the flip completes */
-  readonly desc: DescState | null
+  /** powered-descent law state (plan, disturbance observer); null before the flip completes */
+  readonly land: LandingLawState | null
+  /** predicted horizontal miss of the landing plan (m; 0 = the catch point is reachable) */
+  readonly landMiss: number
+  /** unmodelled acceleration seen by the landing observer (ENU, m/s²): the model-fidelity residual */
+  readonly landResidual: V3
+  /** sea-level engine health and the engines currently commanded on */
+  readonly engHealth: EngineHealth
+  readonly engSel: readonly number[]
+  /** time of the landing-flip ignition (Infinity before it) */
+  readonly tFlip: number
 }
 
 export interface Cmd {
@@ -174,6 +189,8 @@ export interface GuideCtx {
   readonly vehicle: VehicleConfig
   readonly pred: PredContext
   readonly aero: AeroTable
+  /** landing aero database (α 60–180°, engines running); optional so older worlds still type-check */
+  readonly landAero?: LandingAero
   readonly tBurn: number
   readonly dvBurn: number
   readonly armHeight: number
@@ -201,7 +218,7 @@ export const AIM_HIGH = 900
 export const initMem = (bank0: number): Mem => ({
   phase: "deorbitAlign", tPhase: 0, bank: bank0, bankSign: 1, bankHigh: 30 * DEG, npcT: -1e9, revT: -1e9, pred: null,
   burnDv: 0, armsClose: false, caughtT: 0, reason: "", mhdScale: 1.0, qPrev: 1e9, heading: null, bellyMiss: 0, crPrev: 0, crT: -1e9, bankRateScale: 1, aeroScaleL: 1, aeroScaleD: 1, mhdLiftScale: 1, sBankPrev: 0, sBankT: -1e9, sigmaCmd: null, sigmaTgt: 0, tRevPlan: Infinity, hdgCmd: null, liftCmd: null, windOfs: v3(0, 0, 0), tSwitch: Infinity, sigma2: 0, tLandEnd: Infinity, mpcU: null, mpcT: -1e9, landEng: 0, nEngLand: 1, aProf: 0, zProf: 0, uDirPrev: v3(0, 0, 1), uDirT: -1e9, leadF: v3(0, 0, 0), predPath: [], uCmd: [0, 0, 9.79],
-  coilOff: false, coilLowT: -1e9, rcsT: -1e9, flapsDeployed: false, aeroScale: 1, desc: null,
+  coilOff: false, coilLowT: -1e9, rcsT: -1e9, flapsDeployed: false, aeroScale: 1, land: null, landMiss: 0, landResidual: v3(0, 0, 0), engHealth: ENGINE_HEALTH0, engSel: [], tFlip: Infinity,
 })
 
 /**
@@ -256,18 +273,9 @@ const coilCommand = (ctx: GuideCtx, n: Nav, mem: Mem, ev: string[], att: Attitud
 
 
 const ENGINES_OFF: readonly EngineCmd[] = [0, 1, 2].map(() => ({ on: false, throttle: 0.4, gp: 0, gy: 0 }))
-const enginesOn = (n: number, throttle: number): EngineCmd[] => [0, 1, 2].map((i) => ({ on: i < n, throttle, gp: 0, gy: 0 }))
-
 /** pre-flip roll damping: tighten the roll-rate band and give the roll loop its own bandwidth */
 const rollGains = (g: Gains, bandDeg: number, wnRoll: number): Gains => (bandDeg > 0 ? { ...g, rollBand: bandDeg * DEG, wnRoll } : { ...g, wnRoll })
 /** the thrust-direction corridor height schedule (tuning fields; defaults are the flown ramp) */
-const tiltDegFor = (pz: number, T: MissionTuning): number =>
-  pz > 300 ? T.tilt300mDeg
-    : pz > 120 ? T.tilt120mDeg
-      : pz > 60 ? T.tilt60mDeg
-        : pz > 35 ? T.tilt35mDeg
-          : pz > 12 ? T.tilt12mDeg
-            : T.tilt0mDeg
 /**
  * Engines kept after the flip (R11c, Q29/Q33, T09). Two sea-level Raptors at the 40 % throttle floor
  * give T/W ≈ 1.3–1.8 at 110–140 t, so a hover is impossible: the terminal is a timed deceleration
@@ -412,31 +420,19 @@ const ownAeroMoment = (ctx: GuideCtx, n: Nav): V3 => {
   return momentProjection(co.Cm * n.qbar * ctx.pred.sref * ctx.vehicle.shape.p.length, vb.y, vb.z)
 }
 
-const throttleFor = (v: VehicleConfig, nEng: number, thrustTotal: number, pAmb: number): number => {
-  const e = v.engines[0]
-  return clamp((thrustTotal / nEng + pAmb * e.exitArea) / fVac100(e), e.minThrottle, 1)
-}
-
 const enuToEci = (n: Nav, a: V3): V3 => add(add(scale(n.east, a.x), scale(n.north, a.y)), scale(n.up, a.z))
 
 /** limit the thrust direction to within maxTilt of vertical and above a minimum magnitude */
-const shapeThrust = (a: V3, maxTilt: number, aMin: number): V3 => {
-  const h = Math.hypot(a.x, a.y)
-  const vz = Math.max(a.z, 0.5)
-  const hMax = vz * Math.tan(maxTilt)
-  const s = h > hMax ? hMax / h : 1
-  const b = v3(a.x * s, a.y * s, vz)
-  const m = norm(b)
-  return m < aMin ? scale(b, aMin / m) : b
-}
-
 export interface GuideOut {
   readonly cmd: Cmd
   readonly mem: Mem
   readonly events: readonly string[]
 }
 
-const to = (mem: Mem, phase: Phase, t: number, extra: Partial<Mem> = {}): Mem => ({ ...mem, ...extra, phase, tPhase: t })
+const to = (mem: Mem, phase: Phase, t: number, extra: Partial<Mem> = {}): Mem => ({ ...mem, ...extra, phase, tPhase: t, ...(phase === "flip" ? { tFlip: t } : {}) })
+
+/** total thrust during the flip, in units of one engine at 100 %: two engines at the 40 % floor */
+const FLIP_THRUST = 1.2
 
 export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut => {
   const v = ctx.vehicle
@@ -522,7 +518,7 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut =>
       const tab = mhdDragLookup(ctx.pred.mhdDrag, n.alt, n.V) * n.qbar * ctx.pred.sref
       if (tab > 2e4 && n.mhdDrag > 0) mem = { ...mem, mhdScale: clamp(mem.mhdScale + (dt / 6) * (n.mhdDrag / tab - mem.mhdScale), 0.3, 6) }
       // numerical predictor–corrector on the bank magnitude (every 8 s)
-      if (mem.phase === "entry" && n.t - mem.npcT > 10 && n.V > ctx.pred.vLoft + 150) {
+      if (mem.phase === "entry" && n.t - mem.npcT > 15 && n.V > ctx.pred.vLoft + 150) {
         const sol = solveBank(ctx.pred, predInput(n, mem, "entry"), "entry", mem.bank, T.aimEntry)
         mem = { ...mem, bank: sol.bank, pred: sol.out, npcT: n.t }
       }
@@ -681,10 +677,10 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut =>
     case "flip":
     case "landing":
     case "terminal": {
-      // R11c / Q29 / Q33 (T09): from flip ignition to the pins the sea-level Raptors are the only
-      // actuators — no cold gas, no coil. Two Raptors at the 40 % floor give T/W > 1.3, so there is no
-      // hover: the vertical channel is a timed deceleration to the rails and the lateral divert is an
-      // MPC with the same free final time (landing.ts).
+      // From flip ignition to the pins the sea-level Raptors are the only actuators (R11c): thrust,
+      // pitch/yaw and — with two or more running — roll by differential gimbal. Guidance is
+      // `landingLaw.ts`: one convex plan to the pins, tracked and re-solved; the throttle floor is a
+      // constraint of the plan (two Raptors cannot hover, so the descent is a timed deceleration).
       const eng0 = v.engines[0]
       const tMaxN = fVac100(eng0) - n.pAmb * eng0.exitArea
       const tMinN = eng0.minThrottle * fVac100(eng0) - n.pAmb * eng0.exitArea
@@ -693,240 +689,102 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut =>
       const dHoriz = Math.hypot(rel.x, rel.y)
       const vHoriz = Math.hypot(n.velRel.x, n.velRel.y)
       const flipping = mem.phase === "flip"
-      // Staged burn (propulsion audit + one-engine amendment): the flip keeps 2 engines for rotation
-      // authority; after the flip ONE SL Raptor flies the falling/steering phase with the full
-      // 40–100 % throttle (one engine at 100 % is 2.45 MN, T/W 1.83, net +8.1 m/s²). It brakes at high
-      // throttle while the speed is high, then throttles down to track the two-engine vertical profile
-      // as the sink is nulled. The second engine lights only for the final brake/roll near the ground.
-      const stage2Alt = 150
-      // new law (descent.ts): convex trajectory generation + tracking on two engines to a gate above
-      // the arms, then one hover-capable engine for the final drop
-      const dl = DESCENT_LAW && !flipping ? flyDescent(ctx, n, mem, T, tMaxN, tMinN) : null
-      if (dl) { mem = dl.mem; ev.push(...dl.events) }
-      const nEng: number = dl ? dl.nEng : flipping ? T.landingEngines : pz <= stage2Alt || -n.velRel.z <= 32 ? 2 : 1
-      const oneEng = !flipping && nEng === 1
-      // thrust-direction corridor: wide while the divert is flown, narrowing into a vertical segment
-      // the *vertical* floor (2 × 40 % → 4–7 m/s² net) is above the profile deceleration near the
-      // ground, so the ship must keep a tilt all the way down to shed it; the cone stays wide and
-      // only closes for the last few metres (the hull lean at the pins stays ≤ ~10°)
-      // tilt corridor ramps down continuously so the TVC can slew from the ≈45° divert attitude to
-      // upright: ≈45° at the divert altitude, ≈28° at 40 m, ≈12° at the pins
-      const tiltDeg = tiltDegFor(pz, T)
-      const lim = { mass: n.m, nEng, thrustMax: tMaxN, thrustMin: tMinN, tanTilt: Math.tan(tiltDeg * DEG) }
-      const terminal = mem.phase === "terminal"
-      // vertical-thrust trim: close the loop on the *achieved* vertical acceleration (nav: engine
-      // thrust magnitude + body attitude — both flight-software data). When the body lags the
-      // commanded tilt its vertical component is too large, the descent over-decelerates and the ship
-      // stalls above the pins; the trim commands less vertical thrust, i.e. a larger tilt demand.
-      // Measured under-tilt feedforward: the body lags the commanded thrust direction, so the achieved
-      // vertical component is larger than commanded and the descent over-decelerates (the 47 m stall).
-      // The body tilt is nav data (attitude), the previous commanded tilt is our own command. Command
-      // the tilt *larger* by the measured lag: u_z ← u_z·cos(θ_target)/cos(θ_target + |lag|), i.e. a
-      // trim < 1. The engine floor forces the magnitude; the surplus leaves laterally (`assemble`).
+      // ---- engine health and selection. The flip lights all three (redundancy while the ship is
+      // broadside and falling); the descent runs `landingEngines` of the healthy ones. A failed
+      // engine is replaced by the spare; with a single engine left the plan is re-made for one.
+      const mon = monitorEngines(mem.engHealth, n.t, mem.engSel, n.thrusts, eng0.spoolTime, tMinN)
+      mem = { ...mem, engHealth: mon.health }
+      for (const i of mon.newlyFailed) ev.push(`ENGINE OUT: Raptor ${i + 1} delivers no thrust at ${pz.toFixed(0)} m — reconfiguring on the remaining engines`)
+      // The flip is on two engines at the 40 % floor: three would add ~150 m/s of vertical impulse in
+      // six seconds and leave the ship climbing; two at the floor give ~60 m/s, which is what the
+      // hoverslam from the low gate needs. The third engine stays available as the spare.
+      const sel = selectEngines(mon.health.failed, mem.engSel, flipping ? Math.max(2, Math.min(3, T.landingEngines)) : T.landingEngines)
+      mem = { ...mem, engSel: sel }
+      const nEng = sel.length
+      // ---- measured thrust vector and the trimmed thrust line (through the CG for the running set)
+      const toEnu = (a: V3): V3 => v3(dot(a, n.east), dot(a, n.north), dot(a, n.up))
       const bX = thrDirBody(n)
-      const uzAch = n.accThrust * dot(bX, n.up)
-      const bodyTilt = Math.acos(clamp(dot(bX, n.up), -1, 1))
-      const cmdTilt = Math.atan2(Math.hypot(mem.uCmd[0], mem.uCmd[1]), Math.max(mem.uCmd[2], 0.5))
-      const magMin = (nEng * tMinN) / n.m
-      const tgtVert = Math.min((mem.aProf > 0.2 ? mem.aProf : 4) + 9.79, 0.98 * magMin)
-      const tgtTilt = Math.acos(clamp(tgtVert / Math.max(magMin, tgtVert), 0, 1))
-      const lag = bodyTilt - cmdTilt // < 0: the body is less tilted than commanded
-      const ffTrim = Math.cos(clamp(tgtTilt - lag, 0.05, 1.35)) / Math.max(Math.cos(tgtTilt), 0.2)
-      const fbTrim = 0.5 + 0.5 * mem.uCmd[2] / Math.max(uzAch, 2)
-      const uzTrim = flipping ? 1 : clamp(0.5 * ffTrim + 0.5 * fbTrim, T.landingUzTrimMin, T.landingUzTrimMax)
-      // plan at 4 Hz; inside the terminal altitude the analytic law runs every control step
-      // 10 Hz receding horizon (the MPC solve is a few ms; the 0.02 s plant step gets a fresh plan
-      // every 0.1 s and the same plan between)
-      const replan = terminal || mem.mpcU === null || n.t - mem.mpcT >= 0.1
-      let uCmd: readonly [number, number, number] = mem.uCmd
-      let tgo = 0
-      let feasible = true
-      let isTerminal = terminal
-      if (DESCENT_LAW && flipping) {
-        // flip: rotate to vertical on a fixed target (a moving divert target kept the pointing error
-        // open and ran the flip into its 9 s timeout); 70 % thrust gives the gimbals their torque
-        uCmd = [0, 0, (0.7 * 2 * tMaxN) / n.m]
-        mem = { ...mem, uCmd: [0, 0, uCmd[2]], predPath: [] }
-      } else if (dl) {
-        uCmd = [dl.u.x, dl.u.y, dl.u.z]
-        mem = { ...mem, uCmd: [dl.u.x, dl.u.y, dl.u.z], predPath: dl.path.map((q) => v3(q.x, q.y, q.z + ctx.armHeight)) }
-      } else if (replan) {
-        const bXe = thrDirBody(n)
-        const dNow = [dot(bXe, n.east), dot(bXe, n.north), dot(bXe, n.up)] as const
-        // the divert MPC may aim off the catch point by `landingAimE/N` to pre-compensate a measured
-        // systematic tracking drift; the terminal law and the arm/catch gates always use the true pins
-        const aimE = T.landingAimE, aimN = T.landingAimN
-        const st = { p: [rel.x - aimE, rel.y - aimN, pz] as const, v: [n.velRel.x, n.velRel.y, n.velRel.z] as const, a: aNowEnu(n), d: dNow }
-        if (terminal) {
-          uCmd = terminalControl({ ...st, p: [rel.x, rel.y, pz], v: [n.velRel.x, n.velRel.y, n.velRel.z] }, lim, T.contactSpeed)
-          // Real predicted terminal path: a point-mass rollout of the same terminal law, not a
-          // synthetic "looks right" line. The overlay's pale line must be the plan the controller
-          // actually flies; if it misses the arms, the line shows that too.
-          let pp = v3(rel.x, rel.y, pz)
-          let vv = v3(n.velRel.x, n.velRel.y, n.velRel.z)
-          const termPath: V3[] = []
-          for (let k = 0; k < 30; k++) {
-            const uc = terminalControl({ p: [pp.x, pp.y, pp.z] as const, v: [vv.x, vv.y, vv.z] as const, a: [0, 0, 0] as const, d: [0, 0, 1] as const }, lim, T.contactSpeed)
-            vv = add(vv, scale(sub(v3(uc[0], uc[1], uc[2]), v3(0, 0, 9.79)), 0.1))
-            pp = add(pp, scale(vv, 0.1))
-            termPath.push(v3(pp.x, pp.y, Math.max(pp.z, 0) + ctx.armHeight))
-            if (pp.z <= 0) break
-          }
-          mem = { ...mem, predPath: termPath }
-        } else {
-          const sol = planLanding(st, lim, {
-            vF: T.contactSpeed,
-            tau: flipping ? T.landingTauFlip : pz > 120 ? T.landingTauHigh : T.landingTauLow,
-            glide: T.landingGlide, terminalAlt: T.landingTerminalAlt, uzTrim: nEng === 2 ? uzTrim : 1, aCruise: mem.aProf, zFinal: mem.zProf,
-            warm: mem.mpcU, wMag: T.landingWMag, omegaMax: T.landingOmegaMax, slewRate: T.landingSlewRate, warm6: mem.mpcU, use6: false, mode: "twoPhase",
-            field: flipping ? false : { ...LATERAL_FIELD_DEFAULT, zHand: T.terminalSwitchAlt }, flipping, profileEngines: 2,
-            weights: {
-              qp: T.landingQp, qv: T.landingQv, wvXY: T.landingQvXY, ru: T.landingRu, rd: T.landingRd,
-              Qp: T.landingTermQp, Qv: T.landingTermQv,
-            },
-          })
-          uCmd = sol.u
-          tgo = sol.tgo
-          feasible = sol.feasible
-          isTerminal = sol.terminal
-          if (sol.u6) mem = { ...mem, mpcU: sol.u6, mpcT: n.t }
-          else if (sol.plan) mem = { ...mem, mpcU: sol.plan.u, mpcT: n.t }
-          // visual export: the plan's predicted positions, pad ENU from the ground (U += arm height)
-          if (sol.path && sol.path.length > 1) mem = { ...mem, predPath: sol.path.map((q) => v3(q[0], q[1], q[2] + ctx.armHeight)) }
+      const lineEci = qrot(n.q, trimThrustLine(v.engines.slice(0, 3), n.thrusts, n.xcg))
+      const lineEnu = toEnu(lineEci)
+      const uReal = scale(toEnu(qrot(n.q, n.engF)), 1 / n.m)
+      const uAxis = scale(lineEnu, n.accThrust)
+      const uAxisDot = scale(toEnu(cross(qrot(n.q, n.w), lineEci)), n.accThrust)
+      // ---- environment model: forecast wind + measured offset, landing aero database
+      const wf = ctx.windForecast(Math.max(n.hBase, 0))
+      const wind = v3(wf.x + mem.windOfs.x, wf.y + mem.windOfs.y, 0)
+      const rho = atmosphere(Math.max(n.alt, 0)).rho
+      const la = ctx.landAero
+      const aeroForce = (xh: V3, va: V3): V3 => (la ? landingAero(la, rho, xh, va, n.xcg).F : scale(va, -0.5 * rho * 40 * norm(va)))
+      let uCmd: V3
+      let uDot = v3(0, 0, 0)
+      let tgo = Infinity
+      if (flipping) {
+        // flip: rotate to vertical on a fixed target; a constant total thrust gives the gimbals their torque
+        uCmd = v3(0, 0, (FLIP_THRUST * tMaxN) / n.m)
+        mem = { ...mem, predPath: [] }
+      } else {
+        const out = guideLanding({
+          t: n.t, rel, vel: n.velRel, mass: n.m, uReal, uAxis, uAxisDot: n.accThrust > 1 ? uAxisDot : null, xBody: toEnu(bX),
+          nEng: Math.max(nEng, 1), thrustMax: tMaxN, thrustMin: tMinN, ve: ispVac(eng0) * 9.80665, pAe: n.pAmb * eng0.exitArea,
+          wind, aeroForce, contactSpeed: T.contactSpeed,
+        }, mem.land ?? LANDING_LAW_STATE0)
+        ev.push(...out.events)
+        mem = { ...mem, land: out.state, landMiss: out.miss, landResidual: out.residual, predPath: out.path.map((q) => v3(q.x, q.y, q.z + ctx.armHeight)) }
+        uCmd = out.u; uDot = out.uDot; tgo = out.tgo
+        if (mem.phase === "landing" && out.frozen) {
+          mem = to(mem, "terminal", n.t)
+          ev.push(`terminal: ${out.tgo.toFixed(1)} s to the pins, ${pz.toFixed(1)} m above the rails at ${(-n.velRel.z).toFixed(1)} m/s, offset ${dHoriz.toFixed(2)} m — plan frozen, tracking only`)
         }
-        mem = { ...mem, uCmd: [uCmd[0], uCmd[1], uCmd[2]] }
-        // steering-rate feed-forward: the commanded direction's rotation rate between consecutive
-        // plans, led by the attitude loop's time constant (pure command feed-forward, no error feedback)
-        const dirNow = normalize(enuToEci(n, shapeThrust(v3(uCmd[0], uCmd[1], uCmd[2]), tiltDeg * DEG, 0)))
-        const dtp = n.t - mem.uDirT
-        if (dtp > 0.02 && dtp < 0.6) {
-          const leadNew = scale(sub(dirNow, mem.uDirPrev), 0.6 / dtp)
-          const ln = norm(leadNew)
-          mem = { ...mem, leadF: ln > 0.24 ? scale(leadNew, 0.24 / ln) : leadNew }
-        }
-        mem = { ...mem, uDirPrev: dirNow, uDirT: n.t }
       }
-      // final safety clamp: the landing law already honours the engine magnitude floor (surplus spent
-      // laterally) and the cone; do not re-impose the floor here by scaling — that would inflate the
-      // vertical and stall the descent.
-      const shaped = dl ? dl.u : shapeThrust(v3(uCmd[0], uCmd[1], uCmd[2]), tiltDeg * DEG, 0)
-      const thrDir = normalize(enuToEci(n, shaped))
-      // small measured-lag lead (0.3, capped at 6°): the larger leads (0.9 and the command-rate
-      // feed-forward) destabilised the attitude (73° overshoot / 139 m miss), so the tilt lag is
-      // left to the vertical trim and reported rather than over-driven.
-      const bXn = thrDirBody(n)
-      const eDir = sub(thrDir, bXn)
-      const lagMag = norm(eDir)
-      const leadK = lagMag > 1e-4 ? Math.min(0.3, (6 * DEG) / lagMag) : 0
-      // Command shaper: never ask the body to slew faster than it can. The plan's thrust direction
-      // can jump ~38°/s at a replan; the landing loop's rate limit is ~26°/s, so the body falls
-      // behind and the flown path (blue) diverges from the plan (white). Rotate the attitude target
-      // toward the previous command at the achievable rate.
-      const attRaw = normalize(add(thrDir, scale(eDir, leadK)))
-      const dtc = clamp(n.t - mem.uDirT, 0.02, 0.25)
-      const maxAng = clamp(T.landingWMaxDeg * DEG * 0.8, 4 * DEG, 26 * DEG) * dtc
-      const cosA = clamp(dot(attRaw, mem.uDirPrev), -1, 1)
-      const angA = Math.acos(cosA)
-      // new law: the plan is already slew-limited and continuous, so the body simply follows it
-      const attX = DESCENT_LAW ? thrDir : angA > maxAng && angA > 1e-6
-        ? normalize(add(scale(attRaw, Math.sin(maxAng) / Math.sin(angA)), scale(mem.uDirPrev, Math.sin(angA - maxAng) / Math.sin(angA))))
-        : attRaw
-      // new law, vertical channel first: thrust acts along the body axis, so size it to deliver the
-      // commanded *vertical* acceleration at the attitude actually flown (the descent is a timed
-      // deceleration; a tilt lag must not turn into a vertical error)
-      const bzUp = dot(normalize(bXn), n.up)
-      const thrustCmd = dl && bzUp > 0.5 && lagMag < 0.45 ? (n.m * shaped.z) / bzUp : n.m * norm(shaped)
-      const throttle = throttleFor(v, nEng, thrustCmd, n.pAmb)
-      // roll: the pins are symmetric (body ±y over the east/west rails), so z → north or z → south,
-      // whichever is closer (≤ 90° of roll); two symmetric engines roll by differential gimbal.
+      mem = { ...mem, uCmd: [uCmd.x, uCmd.y, uCmd.z] }
+      // ---- attitude command: the body axis that puts the trimmed thrust line on the commanded
+      // direction, with the reference's own rotation rate fed forward
+      const um = norm(uCmd)
+      const dirEnu = scale(uCmd, 1 / Math.max(um, 1e-6))
+      const thrDir = normalize(enuToEci(n, dirEnu))
+      const attX = normalize(sub(thrDir, sub(lineEci, bX)))
+      const dDot = um > 1 ? scale(sub(uDot, scale(dirEnu, dot(uDot, dirEnu))), 1 / um) : v3(0, 0, 0)
+      const rateEci = enuToEci(n, cross(dirEnu, dDot))
+      // ---- throttle, vertical channel first: size the thrust so that its *vertical* component is the
+      // commanded one at the attitude actually flown (the descent is a timed deceleration; an attitude
+      // lag must not become a vertical error). A starting engine counts by the thrust it delivers.
+      const lineUp = dot(lineEci, n.up)
+      const pointErr = Math.acos(clamp(dot(lineEci, thrDir), -1, 1))
+      const thrustWant = !flipping && lineUp > 0.5 && pointErr < 25 * DEG ? (n.m * uCmd.z) / lineUp : n.m * um
+      const tTop = sel.reduce((mx, i) => Math.max(mx, n.thrusts[i] ?? 0), 0)
+      const nEff = tTop > 0.5 * tMinN ? sel.reduce((sum, i) => sum + clamp((n.thrusts[i] ?? 0) / tTop, 0, 1), 0) : Math.max(nEng, 1)
+      const throttle = clamp((thrustWant / Math.max(nEff, 0.5) + n.pAmb * eng0.exitArea) / fVac100(eng0), eng0.minThrottle, 1)
+      // ---- roll: the pins (body ±y) must end over the east/west rails, so body z → north or south,
+      // whichever is nearer. Free above 450 m (the hull is axisymmetric), then aligned gently.
       const qq = n.q
       const zb = v3(2 * (qq.x * qq.z + qq.w * qq.y), 2 * (qq.y * qq.z - qq.w * qq.x), 1 - 2 * (qq.x * qq.x + qq.y * qq.y))
-      // roll is free until the last few hundred metres (the hull is axisymmetric): demanding a roll
-      // angle during the divert makes the minimum-norm gimbal allocator share its authority between
-      // roll and pitch/yaw, and the measured under-tilt was 10–15° (which over-decelerated the
-      // vertical). Damp the roll rate instead; align the pins east–west late.
-      // Roll the pins east–west early and gently. Commanding it at 250 m made the roll loop spin the
-      // body at >100°/s into the terminal and flip it; 450 m leaves ~15 s at 10°/s to settle, with
-      // the priority allocator keeping pitch/yaw.
-      const att = pz > 450
-        ? { x: attX, spin: 0 }
-        : { x: attX, z: dot(zb, n.north) >= 0 ? n.north : scale(n.north, -1) }
-      // Roll RCS (one-engine phase): a single gimbal has no useful roll authority; the cold-gas roll
-      // couples fire only outside the roll deadband, while pitch/yaw stay on the gimbal (the finite
-      // `rollCap` path in allocateGimbals keeps the gimbal from spinning the hull). No translation.
-      const rollTgt = "z" in att && att.z ? att.z : null
-      const bxRoll = normalize(thrDirBody(n))
-      let rollErr = 0
-      if (rollTgt) {
-        const zp = sub(rollTgt, scale(bxRoll, dot(rollTgt, bxRoll)))
-        if (norm(zp) > 1e-6) {
-          const zpn = normalize(zp)
-          rollErr = Math.atan2(dot(cross(zb, zpn), bxRoll), dot(zb, zpn))
-        }
-      }
-      const rollPulse = oneEng && (Math.abs(rollErr) > 4 * DEG || Math.abs(n.w.x) > 3 * DEG)
-      if (rollPulse && n.t - mem.rcsT > 2) {
-        mem = { ...mem, rcsT: n.t }
-        ev.push(`roll RCS pulse: roll ${(rollErr / DEG).toFixed(1)}° error, rate ${(n.w.x / DEG).toFixed(1)}°/s (pitch/yaw on the gimbal)`)
-      }
-      const cmdEngines = enginesOn(nEng, throttle)
+      const att = pz > 450 || flipping
+        ? { x: attX, spin: 0, rate: rateEci }
+        : { x: attX, z: dot(zb, n.north) >= 0 ? n.north : scale(n.north, -1), rate: rateEci }
+      const oneEng = !flipping && nEng === 1
+      const cmdEngines: EngineCmd[] = [0, 1, 2].map((i) => ({ on: sel.includes(i), throttle, gp: 0, gy: 0 }))
       if (flipping) {
-        const pointErr = Math.acos(clamp(dot(normalize(thrDirBody(n)), thrDir), -1, 1))
-        // the flip ends when the thrust axis follows the command: three engines can stop any residual
-        // rate; after that two (R11c) fly the hoverslam. Timeout 10 s for a stuck rotation.
-        if (n.spoolDone && tp > 2 && ((pointErr < 22 * DEG && Math.hypot(n.w.y, n.w.z) < 5 * DEG) || tp > 9)) {
-          // fix the vertical profile deceleration here, once: recomputing it from a state that has
-          // already over-decelerated makes the required decel shrink, the tilt demand grow and the
-          // descent collapse (the 47 m stall). The profile must be monotone to z = 0.
-          // two-phase vertical profile: cruise (divert) deceleration + the altitude where the
-          // near-vertical final descent starts. zFinal follows from the continuity of the profile:
-          //   s² = vF² + 2·aBrake·zF + 2·aCruise·(pz − zF)
-          // Distinct phases: a lateral-null cruise at the altitude-matched deceleration down to zProf,
-          // then an upright brake at the floor's own vertical deceleration aBrake. zProf follows from
-          // the profile continuity s² = vF² + 2·aBrake·zProf + 2·aCruise·(pz − zProf).
-          const sHand = Math.max(-n.velRel.z, 0.7)
-          const magMin = (T.landingEngines * tMinN) / n.m
-          const aBrake = Math.max(magMin - 9.79, 0.6)
-          const aCruise = clamp((sHand * sHand - T.contactSpeed * T.contactSpeed) / (2 * Math.max(pz, 1)), T.landingACruiseMin, T.landingACruiseMax)
-          const zFin = (sHand * sHand - T.contactSpeed * T.contactSpeed - 2 * aCruise * pz) / (2 * Math.max(aBrake - aCruise, 0.2))
-          const zProf = clamp(zFin, T.landingZProfMin, T.landingZProfMax)
-        mem = to(mem, "landing", n.t, { nEngLand: 1, mpcU: null, aProf: aCruise, zProf, desc: null })
-          ev.push(`flip complete: staged burn — 1 × Raptor SL high-throttle falling/steering phase (roll-only RCS), cruise ${aCruise.toFixed(2)} m/s² to ${zProf.toFixed(0)} m, 1→2 at 150 m for the final brake/roll${feasible ? "" : " — divert INFEASIBLE with the throttle floor"}${tgo > 0 ? `, plan t_go ${tgo.toFixed(1)} s` : ""}`)
+        const flipErr = Math.acos(clamp(dot(normalize(bX), thrDir), -1, 1))
+        // the flip ends when the thrust axis is near vertical and the rotation is arrested (timeout 9 s)
+        if (n.spoolDone && tp > 2 && ((flipErr < 22 * DEG && Math.hypot(n.w.y, n.w.z) < 5 * DEG) || tp > 9)) {
+          mem = to(mem, "landing", n.t, { land: null })
+          ev.push(`flip complete in ${tp.toFixed(1)} s on ${nEng} engine(s): ${pz.toFixed(0)} m above the rails, ${dHoriz.toFixed(0)} m off, ${vHoriz.toFixed(0)} m/s horizontal, sink ${(-n.velRel.z).toFixed(0)} m/s — planned descent on ${Math.min(T.landingEngines, nEng)}`)
         }
       }
-      // Approach direction: the terminal law is only entered from the south side and while not
-      // moving away from the arms. The ship must come from above/south, never from the tower side.
-      if (dl) {
-        if (mem.phase === "landing" && dl.stage === 1) mem = to(mem, "terminal", n.t, { mpcU: null })
-      } else if (mem.phase === "landing" && (isTerminal || pz <= T.terminalSwitchAlt) && dHoriz < T.terminalSwitchLat && vHoriz < T.terminalSwitchV && rel.y < 5 && n.velRel.y > -0.5) {
-        mem = to(mem, "terminal", n.t, { mpcU: null })
-        ev.push(`terminal descent: pins ${pz.toFixed(1)} m above the rails at ${(-n.velRel.z).toFixed(1)} m/s, offset ${dHoriz.toFixed(2)} m${tgo > 0 ? `, t_go ${tgo.toFixed(1)} s` : ""}`)
-      }
+      // ---- arms: close on the time to the rails (the plan's own time-to-go), geometry checked at
+      // the predicted closure position
       let arms = mem.armsClose
-      // 3 s arm travel: close before the fast last metres (the hoverslam cannot slow down to hover)
-      // the ship enters the arms *sideways*: pins (body y) E–W, belly (body z) N–S, moving along the
-      // arms (world y, the open south side). Close only when the across-arm offset and velocity are small.
-      // Close on *time to the rails*, not a fixed altitude: the arms take 3 s, so start at
-      // `armCloseLead` (> 3 s) and finish just before the pins touch. The geometry is checked at the
-      // predicted closure position, so horizontal drift during the close is accounted for.
-      const tRail = pz / Math.max(-n.velRel.z, 0.4)
+      const tRail = Number.isFinite(tgo) && tgo > 0 ? tgo : pz / Math.max(-n.velRel.z, 0.4)
       const lead = Math.max(TOWER.closeTime + 0.2, T.armCloseLead)
-      const xClose = rel.x + n.velRel.x * lead
-      const yClose = rel.y + n.velRel.y * lead
+      const xClose = rel.x + n.velRel.x * Math.min(lead, tRail)
+      const yClose = rel.y + n.velRel.y * Math.min(lead, tRail)
       if (mem.phase !== "flip" && !arms && tRail <= lead && Math.abs(xClose) < T.armCloseLat && Math.abs(yClose) < T.armCloseAlong && Math.abs(n.velRel.x) < T.armCloseAcrossV && vHoriz < T.armCloseV) {
         arms = true
         mem = { ...mem, armsClose: true }
         ev.push(`chopsticks closing: pins ${pz.toFixed(1)} m above the rails (${tRail.toFixed(1)} s), predicted offset at shut ${Math.hypot(xClose, yClose).toFixed(2)} m (across ${xClose.toFixed(2)})`)
       }
-      // A catch requires the arms to be *closed* around the ship: with the arms open their rails are
-      // at ±13 m, and a single pin grazing one of them registers a load while the ship is nowhere near
-      // the centreline. That produced false "caught" outcomes (12.8 m off, arms open, 21 m/s lateral).
-      // The arms are only commanded closed once the offset is < 2 m, so gate the catch on that command.
-      // A catch requires the pins to settle onto the rails with the ship moving *north along the
-      // arms* (+y) and not drifting across them. A north-to-south or sideways arrival is not a catch.
-      // Both pins must carry load individually: the total alone (or one pin grazing an open rail)
-      // produced false catches. Each pin ≥ 15 % of weight, and the total stays above the old 45 %
-      // gate so a lightly touched pair is not a catch either.
+      // A catch needs the arms closed around the ship and both pins individually loaded (a single pin
+      // grazing an open rail produced false catches): each pin ≥ 15 % of the weight, total > 45 %.
       const pinWeight = n.m * 9.81
       const bothPins = bothPinsLoaded(n.pinCount, n.pinLoadMin, 0.15 * pinWeight) && n.pinLoad > 0.45 * pinWeight
       if (mem.phase !== "caught" && mem.phase !== "lost" && mem.armsClose && Math.abs(rel.x) < 1.0 && vHoriz < 1.0 && bothPins) {
@@ -934,43 +792,41 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number): GuideOut =>
         ev.push(`catch pins on the arms — engine shutdown at ${(-n.velRel.z).toFixed(2)} m/s, offset ${dHoriz.toFixed(2)} m. CAUGHT`)
       }
       const caught = mem.phase === "caught"
-      // honest failure detection: with two Raptors at the 40 % floor the vertical cannot be re-started
-      // once it over-decelerates; climbing away above the rail plane with a lateral miss is lost, and
-      // reporting it now keeps the (finite) header from being burnt in a climb that cannot recover.
+      // honest failure detection
       let lostNow = false
-      if (!caught && pz < 200 && n.velRel.z > 3) {
+      if (!caught && nEng === 0) {
+        lostNow = true
+        mem = to(mem, "lost", n.t, { reason: "no sea-level engine left" })
+        ev.push(`LOST: all three sea-level engines failed at ${pz.toFixed(0)} m above the rails`)
+      } else if (!caught && !flipping && pz < 200 && n.velRel.z > 3) {
         lostNow = true
         mem = to(mem, "lost", n.t, { reason: "landing missed the arms (throttle floor: no hover)" })
-        ev.push(`LOST: hoverslam cannot reach the pins — pins ${pz.toFixed(0)} m above the rails, ${dHoriz.toFixed(0)} m off, climbing at ${n.velRel.z.toFixed(1)} m/s (${nEng} × Raptor, ${oneEng ? "one-engine guided fall" : "2-engine floor cannot hover"})`)
+        ev.push(`LOST: climbing away at ${n.velRel.z.toFixed(1)} m/s, pins ${pz.toFixed(0)} m above the rails, ${dHoriz.toFixed(0)} m off (${nEng} × Raptor)`)
+      } else if (!caught && pz < -3) {
+        lostNow = true
+        mem = to(mem, "lost", n.t, { reason: `landing missed the arms by ${dHoriz.toFixed(0)} m` })
+        ev.push(`LOST: pins passed the rail plane ${dHoriz.toFixed(1)} m from the catch point (across ${rel.x.toFixed(1)}, along ${rel.y.toFixed(1)}) at ${(-n.velRel.z).toFixed(1)} m/s`)
       }
       if (n.propHeader < 50 && !caught && !lostNow) {
         if (mem.phase !== "lost") mem = to(mem, "lost", n.t, { reason: "landing propellant exhausted" })
         ev.push(`LOST: landing propellant exhausted at ${pz.toFixed(0)} m above the rails (${(-n.velRel.z).toFixed(0)} m/s)`)
       }
+      // attitude feed-forward: the aerodynamic moment of the landing database at the real α (the
+      // entry table stops at 95°; tail-first it would feed forward the wrong moment)
+      const ffMoment = la ? qrotInv(n.q, landingAero(la, rho, bX, n.vAir, n.xcg).M) : base.ffMoment
+      const gl = { ...GAINS.landing, wn: T.landingWn, zeta: T.landingZeta, wMax: T.landingWMaxDeg * DEG, wnRoll: T.landingWnRoll, rollMax: T.landingRollMaxDeg * DEG }
       return {
-        // From flip ignition onward the engines are the thrust/pitch/yaw actuators. The one-engine
-        // stage may use the cold-gas roll couples only (short roll pulses, no translation); pitch/yaw
-        // remain on the gimbal. The 2-engine final uses differential-gimbal roll.
         cmd: {
-          // feedForward cancels the *static* aero moment from guidance's own table (R6): at ≈ 100 m/s
-          // base-first the hull is aerodynamically stable nose-up, and without the cancellation the
-          // gimbals at the throttle floor cannot hold the ≈ 30–40° divert tilt (measured under-tilt
-          // 10–15°, which over-decelerated the vertical and stalled the descent).
-          ...base, att, feedForward: true,
+          ...base, att, feedForward: false, ffMoment,
           gains: flipping
             ? { ...GAINS.flip, wn: T.flipWn, zeta: T.flipZeta, wMax: T.flipWMaxDeg * DEG, wnRoll: T.flipWnRoll, rollMax: T.flipRollMaxDeg * DEG }
-            : nEng === 3
-              // three SL at the floor: the extra torque gives the initial divert 1.5× the attitude
-              // authority of the two-engine law; the floor surplus is lateral (the vertical profile
-              // is the two-engine one), so there is no 3-engine vertical stall.
-              ? { ...GAINS.landing, wn: T.landingWn, zeta: T.landingZeta, wMax: T.landingWMaxDeg * DEG, wnRoll: T.landingWnRoll, rollMax: T.landingRollMaxDeg * DEG, axisAccel: [0.5, 0.44, 0.44] }
+            : nEng >= 3
+              ? { ...gl, axisAccel: [0.5, 0.44, 0.44] }
               : nEng === 1
-              // one SL gimbal: pitch/yaw authority ≈ the 2-engine floor (same total thrust), roll via
-              // the cold-gas couples; conservative rate caps keep the gimbal inside its box so the
-              // RCS residual stays roll-only.
-              ? { ...GAINS.landing, wn: T.landingWn, zeta: T.landingZeta, wMax: Math.min(T.landingWMaxDeg, 20) * DEG, wnRoll: 0.5, rollMax: 10 * DEG, axisAccel: [0.3, 0.22, 0.22] }
-              : { ...GAINS.landing, wn: T.landingWn, zeta: T.landingZeta, wMax: T.landingWMaxDeg * DEG, wnRoll: T.landingWnRoll, rollMax: T.landingRollMaxDeg * DEG, axisAccel: [T.landingAxisAccelX, T.landingAxisAccelYZ, T.landingAxisAccelYZ] },
-          engines: caught || lostNow ? ENGINES_OFF : cmdEngines, armsClose: arms, coil: "discharge", useRcs: oneEng, rcsRollOnly: oneEng, flapsDeployed: mem.flapsDeployed,
+                // one gimbal: pitch/yaw only; roll on the cold-gas couples (short pulses), conservative rates
+                ? { ...gl, wMax: Math.min(T.landingWMaxDeg, 20) * DEG, wnRoll: 0.5, rollMax: 10 * DEG, axisAccel: [0.3, 0.22, 0.22] }
+                : { ...gl, axisAccel: [T.landingAxisAccelX, T.landingAxisAccelYZ, T.landingAxisAccelYZ] },
+          engines: caught || lostNow ? ENGINES_OFF : cmdEngines, armsClose: arms, coil: "discharge", useRcs: oneEng, rcsRollOnly: oneEng, flapsDeployed: false,
         },
         mem, events: ev,
       }
@@ -1285,7 +1141,7 @@ const planBank = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number, phaseP: PredPhas
   const sc = mem.sigmaCmd ?? 0
   const range = crossrange(n).range
   const revSoon = Number.isFinite(mem.tRevPlan) && mem.tRevPlan - n.t < 25
-  const period = revSoon ? 1 : phaseP === "belly" ? 2 : range > 500e3 ? 10 : range > 150e3 ? 6 : 4
+  const period = revSoon ? 1.5 : phaseP === "belly" ? 3 : range > 500e3 ? 15 : range > 150e3 ? 9 : 6
   const uzNow = Math.sqrt(Math.max(0, 1 - dot(vhF, n.up) ** 2)) // vertical component of the in-plane "up"
   const grid = BANK_GRID.filter((m) => uzNow * Math.cos(m) >= LIFT_FLOOR)
   if (n.hBase > hFlip + 150 && n.t - mem.npcT > period) {
@@ -1399,201 +1255,6 @@ const planBank = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number, phaseP: PredPhas
   const sNew = Math.atan2(dot(lc, rightF), dot(lc, upF))
   mem = { ...mem, sigmaCmd: sNew, liftCmd: lc }
   return { sigma: sNew, mem, event }
-}
-
-/** realised thrust acceleration in ENU (m/s²): body +x × |T|/m */
-/** landing law: convex descent plan + tracking (descent.ts). false = the legacy two-phase law. */
-const DESCENT_LAW = true
-/** gate above the rails where the two-engine planned descent hands over to one engine (m), the height
- *  of the constant-speed final (m), the one-engine deceleration between them (m/s²), and the gains */
-const DESC = {
-  gateAlt: 45, decelMargin: 1.5, replan: 0.4, minTgo: 2.5, cdA: 40,
-  // The final phase is where the last lateral metres are won. At the 8° cap the two-engine floor
-  // gives only ≈2 m/s² sideways: 17 m/s of crossrange velocity cannot be removed in the last 45 m.
-  // 30° at the floor gives ≈6.6 m/s² and still keeps the thrust mostly vertical; the cold-gas
-  // couples trim the attitude while the gimbal does the vectoring. The gate is raised to 80 m so the
-  // final has time to null both position and velocity before the rails.
-  kpA: 0.6, kdA: 1.5, kpH: 0.5, kdH: 1.4, kv: 1.5, tiltB: 30, tiltEnd: 30, upright: 8, glideDeg: 20, glideMargin: 8,
-} as const
-
-/**
- * Constraint ladder for the planner. Two Raptors cannot go below T/W ≈ 1.37, so the only way to shed
- * surplus thrust is to tilt: the feasible final-time window is set by the tilt limit. Level 0 is the
- * nominal envelope; the wider levels are used only when the nominal problem has no solution.
- */
-const DESC_LEVELS = [
-  { tilt: 45, rate: 4.2, accel: 2.8, glide: true },
-  { tilt: 55, rate: 5.5, accel: 3.4, glide: true },
-  { tilt: 65, rate: 7, accel: 4, glide: false },
-] as const
-
-export interface DescState {
-  /** 0: tracking the convex plan to the gate; 1: vertical final brake to the pins */
-  readonly stage: 0 | 1
-  /** deceleration of the final brake (m/s²): the two-engine floor at the gate mass plus a control margin */
-  readonly aT: number
-  readonly plan: DescentPlan | null
-  readonly planT: number
-  readonly dob: DisturbanceState | null
-  /** consecutive replans without a feasible plan */
-  readonly fails: number
-  /** constraint level the current plan was found at (index into DESC_LEVELS) */
-  readonly level: number
-  /** last realised thrust acceleration (ENU), for the attitude-rate continuity term */
-  readonly uPrev: { readonly t: number; readonly u: V3 } | null
-  /** terminal spline: start state, start time and duration (the quintic to the pins) */
-  readonly stageT0: number
-  readonly stageDur: number
-  readonly stageP0: V3
-  readonly stageV0: V3
-}
-
-interface DescentOut {
-  readonly u: V3
-  readonly nEng: number
-  readonly stage: 0 | 1
-  readonly mem: Mem
-  readonly events: readonly string[]
-  /** predicted path, pad ENU relative to the catch point */
-  readonly path: readonly V3[]
-}
-
-/**
- * Powered descent after the flip, on two Raptors (full three-axis gimbal authority; one off-axis
- * engine couples yaw into roll, which the cold gas cannot hold). Stage 0: track a fuel-optimal convex
- * plan (replanned from the measured state every `DESC.replan` s, shrinking horizon) to a gate
- * directly above the catch point, arriving upright at the speed the final brake needs. Stage 1: the
- * final brake — two engines cannot hover (T/W ≥ 1.3), so the sink rate follows v(z) = −√(v_c² + 2·a_T·z)
- * with a_T a margin above the throttle floor (authority both ways), while a PD loop holds the pins
- * on the centreline. The pins meet the rails at the contact speed and the engines cut.
- */
-/** realised rotation of the thrust axis (m/s³ in ENU): the body's current slew, continuity for the plan */
-const uDotNow = (n: Nav, prev: DescState): V3 | null => {
-  const d = thrDirBody(n)
-  const s = n.accThrust
-  const x = v3(s * dot(d, n.east), s * dot(d, n.north), s * dot(d, n.up))
-  const p = prev.uPrev
-  if (!p || n.t - p.t <= 0 || n.t - p.t > 0.5) return null
-  return v3((x.x - p.u.x) / (n.t - p.t), (x.y - p.u.y) / (n.t - p.t), (x.z - p.u.z) / (n.t - p.t))
-}
-
-const flyDescent = (ctx: GuideCtx, n: Nav, mem0: Mem, T: MissionTuning, tMaxN: number, tMinN: number): DescentOut => {
-  const ev: string[] = []
-  const eng0 = ctx.vehicle.engines[0]
-  const rel = n.pinRel, vel = n.velRel
-  // final-brake deceleration, fixed once: floor at the estimated gate mass (≈ 9 t burnt by then) + margin
-  const prev: DescState = mem0.desc ?? { stage: 0, plan: null, planT: -1e9, dob: null, fails: 0, level: 0, uPrev: null, stageT0: -1, stageDur: 10, stageP0: v3(0, 0, 0), stageV0: v3(0, 0, 0), aT: (T.landingEngines * tMinN) / Math.max(n.m - 9000, 0.8 * n.m) - G_DESCENT + DESC.decelMargin }
-  const ua = aNowEnu(n)
-  const uReal = v3(ua[0], ua[1], ua[2])
-  const wf = ctx.windForecast(Math.max(n.hBase, 0))
-  const wind = v3(wf.x + mem0.windOfs.x, wf.y + mem0.windOfs.y, 0)
-  const rho = atmosphere(Math.max(n.alt, 0)).rho
-  const vr = sub(vel, wind)
-  const dragNow = scale(vr, (-0.5 * rho * DESC.cdA * norm(vr)) / n.m)
-  // residual acceleration the drag model does not explain (wind error, thrust misalignment)
-  const dob = observeDisturbance(prev.dob, n.t, vel, add(uReal, dragNow))
-  const vC = T.contactSpeed
-  const aT = prev.aT
-  const sG = Math.sqrt(vC * vC + 2 * aT * DESC.gateAlt)
-  let stage = prev.stage, plan = prev.plan, planT = prev.planT, fails = prev.fails, level = prev.level
-  let stageT0 = prev.stageT0, stageDur = prev.stageDur, stageP0 = prev.stageP0, stageV0 = prev.stageV0
-  let u = v3(0, 0, G_DESCENT)
-  let path: V3[] = []
-  if (stage === 0) {
-    const baseAt = (lv: number): Omit<DescentProblem, "tf"> => ({
-      p0: rel, v0: vel, uNow: uReal, uDotNow: uDotNow(n, prev), mass: n.m,
-      veh: { nEng: T.landingEngines, thrustMax: tMaxN, thrustMin: tMinN, ve: ispVac(eng0) * 9.80665, pAe: n.pAmb * eng0.exitArea },
-      pf: v3(0, 0, DESC.gateAlt), vf: v3(0, 0, -sG), dist: dob.d, drag: { cdA: DESC.cdA, rho, wind },
-      tiltMaxDeg: DESC_LEVELS[lv].tilt, tiltEndDeg: DESC.tiltEnd, uprightTime: DESC.upright,
-      rate: DESC_LEVELS[lv].rate, accel: DESC_LEVELS[lv].accel, glide: DESC_LEVELS[lv].glide ? { deg: DESC.glideDeg, margin: DESC.glideMargin } : null,
-    })
-    const tgoPlan = plan ? plan.t0 + plan.tf - n.t : 0
-    if (!plan || tgoPlan <= 0) {
-      // cold start (or the plan ran out above the gate): free-final-time search
-      if (n.t - planT >= (plan ? 0 : 1) || planT < -1e8) {
-        let found: DescentPlan | null = null
-        for (let lv = 0; lv < DESC_LEVELS.length && !found; lv++) {
-          found = planDescent(baseAt(lv), n.t, undefined, 6, 2, 25).plan
-          if (found) level = lv
-        }
-        planT = n.t
-        if (found) {
-          plan = found; fails = 0
-          ev.push(`descent plan: ${found.tf.toFixed(1)} s to the gate ${DESC.gateAlt} m above the rails, ${(found.fuel / 1e3).toFixed(1)} t, from ${Math.hypot(rel.x, rel.y).toFixed(0)} m off at ${rel.z.toFixed(0)} m, tilt ≤ ${DESC_LEVELS[level].tilt}°; solver residuals ${found.rPrim.toExponential(1)}/${found.rDual.toExponential(1)}`)
-        } else {
-          plan = null; fails++
-          if (fails === 1) ev.push(`descent plan INFEASIBLE from ${Math.hypot(rel.x, rel.y).toFixed(0)} m off at ${rel.z.toFixed(0)} m, ${norm(vel).toFixed(0)} m/s — flying the closest-approach fallback`)
-        }
-      }
-    } else if (n.t - planT >= DESC.replan && tgoPlan > DESC.minTgo) {
-      planT = n.t
-      const cand = solveDescent({ ...baseAt(level), tf: tgoPlan, prev: plan, maxIter: 350 }, n.t)
-      if (cand.converged && cand.slackMax <= 0.05) { plan = cand; fails = 0 }
-      else {
-        // the fixed-time problem is no longer solvable from the measured state: re-open the final time,
-        // then the constraint level; if nothing solves, keep tracking the last valid plan
-        let found: DescentPlan | null = null
-        for (let lv = level; lv < DESC_LEVELS.length && !found; lv++) {
-          found = planDescent({ ...baseAt(lv), prev: plan }, n.t, [0.8 * tgoPlan, 1.35 * tgoPlan], 4, 1, 15).plan
-          if (found) level = lv
-        }
-        if (found) { plan = found; fails = 0 } else fails++
-      }
-    }
-    const lo = (2 * tMinN) / n.m, hi = (2 * tMaxN) / n.m
-    if (plan) {
-      u = trackDescent(plan, n.t, rel, vel, { kp: DESC.kpA, kd: DESC.kdA }).u
-      path = Array.from({ length: plan.K }, (_, k) => v3(plan!.p[3 * k], plan!.p[3 * k + 1], plan!.p[3 * k + 2])).filter((q, k) => plan!.t0 + k * plan!.h >= n.t - plan!.h && q.z >= 0)
-    } else {
-      // no feasible plan: zero-effort-miss/velocity guidance toward the gate (best effort, honest miss)
-      const dz = Math.max(rel.z - DESC.gateAlt, 1)
-      const tgo = clamp((2 * dz) / Math.max(-vel.z + sG, 2), 1.5, 60)
-      const zem = (p: number, w: number): number => (-6 * (p + w * tgo)) / (tgo * tgo) + (2 * w) / tgo
-      u = v3(zem(rel.x, vel.x), zem(rel.y, vel.y), G_DESCENT + (vel.z * vel.z - sG * sG) / (2 * dz) - dragNow.z - dob.d.z)
-    }
-    u = fitThrust(u, lo, hi, Math.tan((DESC_LEVELS[level].tilt + 5) * DEG))
-    path.push(v3(0, 0, 0))
-    if (rel.z <= DESC.gateAlt + 2) {
-      stage = 1
-      // terminal spline duration: the constant-deceleration time from the gate state to the contact
-      // speed, so the quintic's vertical profile is flyable at the two-engine floor
-      const Td = clamp((2 * Math.max(rel.z, 1)) / Math.max(-vel.z + vC, 0.5), 2, 25)
-      stageT0 = n.t; stageDur = Td; stageP0 = rel; stageV0 = vel
-      ev.push(`gate: ${rel.z.toFixed(0)} m above the rails, ${Math.hypot(rel.x, rel.y).toFixed(2)} m off, sink ${(-vel.z).toFixed(1)} m/s (plan ${sG.toFixed(1)}), lateral ${Math.hypot(vel.x, vel.y).toFixed(2)} m/s — terminal spline ${Td.toFixed(1)} s to the pins at ${vC.toFixed(1)} m/s`)
-    }
-  }
-  if (stage === 1) {
-    // Terminal spline: a C² quintic from the gate state to the pins, position (0,0,0) and velocity
-    // (0,0,−contact). The acceleration feedforward is the spline's second derivative, so the engine
-    // gimbal has the optimal path rather than a PD correction that chases the error. The PD terms
-    // only remove the model error (drag, wind, mass).
-    if (prev.stageT0 < 0) {
-      const Td = clamp((2 * Math.max(rel.z, 1)) / Math.max(-vel.z + vC, 0.5), 2, 25)
-      stageT0 = n.t; stageDur = Td; stageP0 = rel; stageV0 = vel
-    }
-    const q = quintic(stageP0, stageV0, v3(0, 0, 0), v3(0, 0, -vC), stageDur)
-    const tau = clamp((n.t - stageT0) / Math.max(stageDur, 1e-3), 0, 1)
-    const pr = q.p(tau), vr = q.v(tau), ar = q.a(tau)
-    const lo = (2 * tMinN) / n.m, hi = (2 * tMaxN) / n.m
-    u = fitThrust(
-      v3(
-        ar.x + DESC.kpH * (pr.x - rel.x) + DESC.kdH * (vr.x - vel.x) - dragNow.x - dob.d.x,
-        ar.y + DESC.kpH * (pr.y - rel.y) + DESC.kdH * (vr.y - vel.y) - dragNow.y - dob.d.y,
-        G_DESCENT + ar.z + DESC.kv * (vr.z - vel.z) - dragNow.z - dob.d.z,
-      ),
-      lo, hi, Math.tan(DESC.tiltB * DEG),
-    )
-    // fine-grained terminal spline for the plan line (the old 3-point path read as two straight
-    // segments; the controller actually flies the continuous quintic)
-    path = Array.from({ length: 40 }, (_, k) => q.p(k / 39))
-  }
-  return { u, nEng: T.landingEngines, stage, mem: { ...mem0, desc: { stage, plan, planT, dob, fails, level, uPrev: { t: n.t, u: v3(u.x, u.y, u.z) }, stageT0, stageDur, stageP0, stageV0, aT } }, events: ev, path }
-}
-
-const aNowEnu = (n: Nav): [number, number, number] => {
-  const x = thrDirBody(n)
-  const s = n.accThrust
-  return [s * dot(x, n.east), s * dot(x, n.north), s * dot(x, n.up)]
 }
 
 /** current body +x in ECI */

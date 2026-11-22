@@ -1,7 +1,7 @@
 import { interp2, bracket } from "@ship/math"
-import { v3, normalize } from "@ship/math"
+import { type V3, v3, add, cross, dot, norm, normalize, scale, sub, ZERO } from "@ship/math"
 import { atmosphere } from "@ship/earth"
-import { type AeroModel, staticCoeffs } from "@ship/aero"
+import { type AeroModel, aeroWrench, staticCoeffs } from "@ship/aero"
 import { makeMhdModel, mhdBasis } from "@ship/mhd"
 import { lookupStag, type ShockTable } from "@ship/gas"
 import type { VehicleConfig } from "@ship/craft"
@@ -95,3 +95,68 @@ export const buildMhdDragTable = (v: VehicleConfig, aero: AeroModel, shock: Shoc
 
 export const mhdDragLookup = (t: MhdDragTable, h: number, U: number): number => interp2(t.hs, t.us, t.dCD, h, U)
 export const mhdLiftLookup = (t: MhdDragTable, h: number, U: number): number => interp2(t.hs, t.us, t.dCL, h, U)
+
+/**
+ * Landing aerodynamic database: body-axis force and pitch-moment coefficients for the powered
+ * descent, α from 60° (end of the belly flop) to 180° (tail-first), low subsonic, engines running
+ * (no base drag). The entry table above stops at 95°, so before this table existed the landing had
+ * no aerodynamic model at all: the planner used a constant C_D·A guess and the attitude loop fed
+ * forward the moment of the α = 95° row while the ship flew tail-first.
+ *
+ * Convention (same as `staticCoeffs`): the air-relative velocity in body axes is
+ * V·(cos α, 0, −sin α); CX, CZ are the force coefficients along body x and body z of that frame,
+ * Cm the moment about body y at `xcgRef`, all referred to q·S (and L for the moment).
+ */
+export interface LandingAero {
+  readonly alphas: number[]
+  readonly CX: number[]
+  readonly CZ: number[]
+  readonly Cm: number[]
+  readonly sref: number
+  readonly lref: number
+  readonly xcgRef: number
+}
+
+export const buildLandingAero = (m: AeroModel, xcgRef: number): LandingAero => {
+  const alphas = Array.from({ length: 25 }, (_, i) => ((60 + i * 5) * Math.PI) / 180)
+  const V = 70, rho = 1.1, a = 340
+  const q = 0.5 * rho * V * V
+  const CX: number[] = [], CZ: number[] = [], Cm: number[] = []
+  for (const al of alphas) {
+    const o = aeroWrench(m, { vAir: v3(V * Math.cos(al), 0, -V * Math.sin(al)), w: ZERO, rho, a, mu: 1.8e-5, xcg: xcgRef, cpMax: 1.84, enginesOn: true, knudsen: 0 })
+    CX.push(o.F.x / (q * m.sref)); CZ.push(o.F.z / (q * m.sref)); Cm.push(o.M.y / (q * m.sref * m.lref))
+  }
+  return { alphas, CX, CZ, Cm, sref: m.sref, lref: m.lref, xcgRef }
+}
+
+const lerpTab = (xs: readonly number[], ys: readonly number[], x: number): number => {
+  if (x <= xs[0]) return ys[0]
+  const n = xs.length
+  if (x >= xs[n - 1]) return ys[n - 1]
+  const i = Math.min(n - 2, Math.floor((x - xs[0]) / (xs[1] - xs[0])))
+  const f = (x - xs[i]) / (xs[i + 1] - xs[i])
+  return ys[i] * (1 - f) + ys[i + 1] * f
+}
+
+/**
+ * Aerodynamic force (N) and moment about the CG (N·m) for a body axis `xHat` and an air-relative
+ * velocity `vAir`, both in the same (arbitrary) frame. The force lies in the plane of the two
+ * vectors; the moment is about their normal, shifted from the table's reference CG to `xcg`.
+ */
+export const landingAero = (t: LandingAero, rho: number, xHat: V3, vAir: V3, xcg: number): { readonly F: V3; readonly M: V3 } => {
+  const V = norm(vAir)
+  if (V < 0.5) return { F: ZERO, M: ZERO }
+  const vh = scale(vAir, 1 / V)
+  const ca = Math.max(-1, Math.min(1, dot(xHat, vh)))
+  const alpha = Math.acos(ca)
+  const sa = Math.sin(alpha)
+  const qS = 0.5 * rho * V * V * t.sref
+  const cx = lerpTab(t.alphas, t.CX, alpha)
+  if (sa < 1e-4) return { F: scale(xHat, qS * cx), M: ZERO }
+  // body z of the table frame: v̂ = cos α x̂ − sin α ẑ
+  const zHat = scale(sub(scale(xHat, ca), vh), 1 / sa)
+  const fz = qS * lerpTab(t.alphas, t.CZ, alpha)
+  const yHat = cross(zHat, xHat)
+  const my = qS * t.lref * lerpTab(t.alphas, t.Cm, alpha) + (xcg - t.xcgRef) * fz
+  return { F: add(scale(xHat, qS * cx), scale(zHat, fz)), M: scale(yHat, my) }
+}

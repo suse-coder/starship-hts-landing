@@ -7,7 +7,7 @@ import { makeThermalGrid, type ThermalGrid } from "@ship/heat"
 import { makeMhdModel, type MhdModel } from "@ship/mhd"
 import { TOWER } from "@ship/tower"
 import {
-  type AeroTable, alphaNoseFirst, buildAeroTable, buildMhdDragTable, DEFAULT_PLAN, type GuideCtx, type MhdDragTable,
+  type AeroTable, alphaNoseFirst, buildAeroTable, buildLandingAero, buildMhdDragTable, DEFAULT_PLAN, type GuideCtx, type MhdDragTable,
   type MissionPlan, planMission, type PredContext,
 } from "@ship/gnc"
 
@@ -61,6 +61,8 @@ export const makeWorld = (design: DesignParams = DEFAULT_DESIGN, log: (s: string
     tBurn: plan.tBurn, dvBurn: plan.dvBurn, armHeight: TOWER.armHeight, catchHold: 8,
     tRamp: Math.max(plan.tBurn + 20, plan.pred.tEntry - 780),
     windForecast,
+    // landing aero database, referenced to the CG with the main tanks empty and the headers full
+    landAero: buildLandingAero(aero, massProps(vehicle, { ...c0, loxMain: 0, ch4Main: 0 }).xcg),
   }
   return {
     design, vehicle, aero, mhd, grid, shock, aeroTab, mhdDrag, plan, guide, padEcef,

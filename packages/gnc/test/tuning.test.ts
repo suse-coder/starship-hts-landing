@@ -14,7 +14,7 @@ describe("MissionTuning defaults", () => {
     const T = MISSION_TUNING_DEFAULT
     expect(T.aimEntry).toBe(180e3)
     expect(T.aimHigh).toBe(900)
-    expect(T.bellyPlanEnd).toBe(1750) // G's fix: decoupled from the gate
+    expect(T.bellyPlanEnd).toBe(1300) // the flip fall + the two-engine stop distance
     expect(T.bellyBankRateDeg).toBe(1.8)
     expect(T.gateMiss).toBe(630)
     expect(T.gateClosing).toBe(35)

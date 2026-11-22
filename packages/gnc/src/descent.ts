@@ -52,8 +52,25 @@ export interface DescentProblem {
   readonly nodes?: number
   /** constant unmodelled acceleration from the disturbance observer (m/s², gravity excluded) */
   readonly dist?: V3
-  /** quadratic drag: a = −½ρ·cdA·|v_rel|·v_rel/m with v_rel = v − wind */
-  readonly drag?: { readonly cdA: number; readonly rho: number; readonly wind: V3 }
+  /**
+   * Aerodynamic force model: `force(xHat, vAir)` returns the force (N) on the vehicle for a body axis
+   * and an air-relative velocity (the landing aero database). The plan is linearised about the
+   * previous iterate (successive convexification): node k uses that iterate's velocity and thrust
+   * direction (the body axis follows the thrust), so the aerodynamic acceleration enters as a known
+   * time profile and the problem stays convex.
+   */
+  readonly aero?: { readonly wind: V3; readonly force: (xHat: V3, vAir: V3) => V3 }
+  /**
+   * Catch corridor: for the last `time` seconds the horizontal distance from the target is bounded
+   * by r0 + rate·(t_f − t), so the ship comes down onto the pins from above, between the arms.
+   */
+  readonly corridor?: { readonly time: number; readonly r0: number; readonly rate: number } | null
+  /**
+   * Minimum-miss mode: the horizontal terminal position is not an equality but a quadratic penalty
+   * with this weight (1/m² scale). Used when the exact problem has no solution: the plan then lands
+   * as close to the target as the vehicle can, with every other constraint still enforced.
+   */
+  readonly softPos?: number
   /** thrust-direction cone half-angle from vertical: wide during the divert, `tiltEndDeg` at the gate */
   readonly tiltMaxDeg?: number
   readonly tiltEndDeg?: number
@@ -102,11 +119,13 @@ export interface DescentPlan {
   readonly rPrim: number
   readonly rDual: number
   readonly iters: number
-  /** largest ρ₁ − ‖u‖ over the nodes (m/s²): ≤ 0 when the plan never asks for less than the throttle floor */
+  /** unused floor margin (the plan no longer enforces the engine floor; `fitThrust` does) */
   readonly slackMax: number
   /** terminal position/velocity error of the returned controls (m, m/s) */
   readonly termPos: number
   readonly termVel: number
+  /** true when the plan was solved in minimum-miss mode (termPos is then the predicted miss) */
+  readonly soft: boolean
   readonly sol: ConicSolution
 }
 
@@ -153,6 +172,15 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
   const prev = pr.prev && pr.prev.K >= 2 ? pr.prev : null
   // ---- profiles the convex problem is linearised about: mass and velocity along the horizon
   const mass = new Float64Array(K), vGuess = new Float64Array(3 * K)
+  // body axis along the horizon (for the aerodynamic profile): the realised axis now, upright later
+  const xGuess = new Float64Array(3 * K)
+  {
+    const un = pr.uNow ? Math.hypot(pr.uNow.x, pr.uNow.y, pr.uNow.z) : 0
+    for (let k = 0; k < K; k++) {
+      if (pr.uNow && un > 1e-3 && k === 0) { xGuess[0] = pr.uNow.x / un; xGuess[1] = pr.uNow.y / un; xGuess[2] = pr.uNow.z / un }
+      else xGuess[3 * k + 2] = 1
+    }
+  }
   const tmp: number[] = [0, 0, 0]
   const thrustMid = 0.5 * (veh.thrustMin + veh.thrustMax) * veh.nEng
   const fillProfiles = (gam: Float64Array | null, vel: Float64Array | null): void => {
@@ -174,6 +202,9 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
     for (let k = 0; k < K; k++) {
       resample(prev, prev.gamma, 1, t0 + k * h, tmp); gam[k] = tmp[0]
       resample(prev, prev.v, 3, t0 + k * h, tmp); vel[3 * k] = tmp[0]; vel[3 * k + 1] = tmp[1]; vel[3 * k + 2] = tmp[2]
+      resample(prev, prev.u, 3, t0 + k * h, tmp)
+      const um = Math.hypot(tmp[0], tmp[1], tmp[2])
+      if (um > 1e-3) { xGuess[3 * k] = tmp[0] / um; xGuess[3 * k + 1] = tmp[1] / um; xGuess[3 * k + 2] = tmp[2] / um }
     }
     fillProfiles(gam, vel)
   } else fillProfiles(null, null)
@@ -195,16 +226,16 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
     }
     haveDir = true
   }
-  const passes = prev ? 2 : 3
+  const passes = prev ? 2 : 5
   for (let pass = 0; pass < passes; pass++) {
     // ---- disturbance acceleration per node: gravity + observer + drag on the profile velocity
     const d = new Float64Array(3 * K)
     for (let k = 0; k < K; k++) {
       let dx = dist.x, dy = dist.y, dz = dist.z - g
-      if (pr.drag) {
-        const rx = vGuess[3 * k] - pr.drag.wind.x, ry = vGuess[3 * k + 1] - pr.drag.wind.y, rz = vGuess[3 * k + 2] - pr.drag.wind.z
-        const c = (-0.5 * pr.drag.rho * pr.drag.cdA * Math.hypot(rx, ry, rz)) / mass[k]
-        dx += c * rx; dy += c * ry; dz += c * rz
+      if (pr.aero) {
+        const va = v3(vGuess[3 * k] - pr.aero.wind.x, vGuess[3 * k + 1] - pr.aero.wind.y, vGuess[3 * k + 2] - pr.aero.wind.z)
+        const f = pr.aero.force(v3(xGuess[3 * k], xGuess[3 * k + 1], xGuess[3 * k + 2]), va)
+        dx += f.x / mass[k]; dy += f.y / mass[k]; dz += f.z / mass[k]
       }
       d[3 * k] = dx; d[3 * k + 1] = dy; d[3 * k + 2] = dz
     }
@@ -228,14 +259,24 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
     let nP = 0, nV = 0
     for (let k = 0; k < K; k++) { nP += Cp[(K - 1) * K + k] ** 2; nV += Cv[(K - 1) * K + k] ** 2 }
     nP = Math.sqrt(nP); nV = Math.sqrt(nV)
+    const soft = pr.softPos !== undefined && pr.softPos > 0
+    const eqB: number[] = []
     for (let a = 0; a < 3; a++) {
-      rows.push(Array.from({ length: K }, (_, k) => [iu(k, a), Cp[(K - 1) * K + k] / nP] as const))
-      bEq[2 * a] = (pf[a] - cP[3 * (K - 1) + a]) / nP
+      if (!(soft && a < 2)) {
+        rows.push(Array.from({ length: K }, (_, k) => [iu(k, a), Cp[(K - 1) * K + k] / nP] as const))
+        eqB.push((pf[a] - cP[3 * (K - 1) + a]) / nP)
+      }
       rows.push(Array.from({ length: K }, (_, k) => [iu(k, a), Cv[(K - 1) * K + k] / nV] as const))
-      bEq[2 * a + 1] = (vf[a] - cV[3 * (K - 1) + a]) / nV
+      eqB.push((vf[a] - cV[3 * (K - 1) + a]) / nV)
     }
-    cones.push({ kind: "eq", n: 6, b: bEq })
+    void bEq
+    cones.push({ kind: "eq", n: eqB.length, b: Float64Array.from(eqB) })
     // (2) throttle band on Γ, following the predicted mass
+    // The plan may command any thrust from 0 to the ceiling. The 40 % *floor* is a property of the
+    // engines, not of the trajectory: `fitThrust` spends the mandatory surplus laterally at the
+    // command stage, which keeps the vertical (the timed deceleration) exactly as planned. Putting
+    // the floor in the QP made the terminal (upright, contact speed) infeasible at low sink rates
+    // and the solver spent its budget on the resulting conflict.
     const lo = new Float64Array(K), hi = new Float64Array(K)
     for (let k = 0; k < K; k++) {
       rows.push([[ig(k), 1]])
@@ -296,7 +337,23 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
         })
       }
     }
-    // (7) thrust floor, linearised about the previous iterate's direction
+    // (6b) catch corridor over the last seconds: ‖p_h(t_j) − p_f‖ ≤ r0 + rate·(t_f − t_j)
+    if (pr.corridor && !soft) {
+      for (let j = 1; j < K - 1; j++) {
+        const left = pr.tf - j * h
+        if (left > pr.corridor.time) continue
+        let nr = 0
+        for (let k = 0; k < K; k++) nr += Cp[j * K + k] ** 2
+        const sc = 1 / Math.max(Math.sqrt(nr), 1e-9)
+        rows.push(Array.from({ length: K }, (_, k) => [iu(k, 0), sc * Cp[j * K + k]] as const))
+        rows.push(Array.from({ length: K }, (_, k) => [iu(k, 1), sc * Cp[j * K + k]] as const))
+        cones.push({ kind: "ball", n: 2, r: sc * (pr.corridor.r0 + pr.corridor.rate * left), shift: Float64Array.of(sc * (cP[3 * j] - pr.pf.x), sc * (cP[3 * j + 1] - pr.pf.y)) })
+      }
+    }
+    // (7) thrust floor: the engines cannot throttle below 40 %. The magnitude constraint |u| ≥ ρ₁ is
+    // non-convex; it is imposed through its half-space linearisation about the previous iterate's
+    // direction (n̂·u ≥ ρ₁). With it the plan is a *timed* descent (there is no hover), which is the
+    // only vertical profile two Raptors can fly.
     if (haveDir) {
       const flo = new Float64Array(K), fhi = new Float64Array(K).fill(1e9)
       for (let k = 0; k < K; k++) {
@@ -317,6 +374,19 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
     if (pr.uNow) {
       const un = [pr.uNow.x, pr.uNow.y, pr.uNow.z]
       for (let a = 0; a < 3; a++) { const w = a < 2 ? wStartH : wStart; P[iu(0, a) * n + iu(0, a)] += 2 * w; q[iu(0, a)] -= 2 * w * un[a] }
+    }
+    // minimum-miss mode: w·‖p_h(t_f) − p_f‖² (rank-one per axis over the controls)
+    if (soft) {
+      const w = pr.softPos as number
+      for (let a = 0; a < 2; a++) {
+        const e0 = cP[3 * (K - 1) + a] - pf[a]
+        for (let k = 0; k < K; k++) {
+          const ck = Cp[(K - 1) * K + k]
+          if (ck === 0) continue
+          q[iu(k, a)] += 2 * w * ck * e0
+          for (let l = 0; l < K; l++) P[iu(k, a) * n + iu(l, a)] += 2 * w * ck * Cp[(K - 1) * K + l]
+        }
+      }
     }
     const A = sparseRows(rows)
     normalizeRows(A, cones)
@@ -348,11 +418,15 @@ export const solveDescent = (pr: DescentProblem, t0 = 0): DescentPlan => {
       converged: sol.converged, rPrim: sol.rPrim, rDual: sol.rDual, iters: sol.iters, slackMax,
       termPos: Math.hypot(p[e] - pr.pf.x, p[e + 1] - pr.pf.y, p[e + 2] - pr.pf.z),
       termVel: Math.hypot(v[e] - pr.vf.x, v[e + 1] - pr.vf.y, v[e + 2] - pr.vf.z),
-      sol,
+      soft, sol,
     }
     // relinearise about this solution for the next pass
     mass.set(mOut)
     vGuess.set(v)
+    for (let k = 0; k < K; k++) {
+      const um = Math.hypot(u[3 * k], u[3 * k + 1], u[3 * k + 2])
+      if (um > 1e-3) { xGuess[3 * k] = u[3 * k] / um; xGuess[3 * k + 1] = u[3 * k + 1] / um; xGuess[3 * k + 2] = u[3 * k + 2] / um }
+    }
     const hadDir = haveDir
     for (let k = 0; k < K; k++) {
       const um = Math.hypot(u[3 * k], u[3 * k + 1], u[3 * k + 2])
@@ -376,20 +450,19 @@ export interface DescentSearch {
   readonly plan: DescentPlan | null
   /** (t_f, fuel, converged) of every candidate, for diagnostics */
   readonly tried: readonly { readonly tf: number; readonly fuel: number; readonly ok: boolean }[]
-  /** the search stopped on its wall-clock budget before covering the grid */
-  readonly budget: boolean
 }
 
 /**
  * Free final time: fuel is unimodal in t_f over the feasible interval (Blackmore 2010), so scan a
  * coarse grid for the feasible interval and refine around the best by golden-section steps.
  */
-export const planDescent = (base: Omit<DescentProblem, "tf">, t0 = 0, range?: readonly [number, number], grid = 6, refine = 2, maxMs = 40): DescentSearch => {
+export const planDescent = (base: Omit<DescentProblem, "tf">, t0 = 0, range?: readonly [number, number], grid = 6, refine = 2): DescentSearch => {
+  // Deterministic by construction: a fixed number of candidates and iterations, never a wall-clock
+  // budget (a time-boxed search makes the flight depend on the machine load — the same state then
+  // gives different plans on different runs).
   const guess = descentTimeGuess(base)
   const [lo, hi] = range ?? [0.55 * guess, 1.9 * guess]
-  const deadline = performance.now() + maxMs
   const tried: { tf: number; fuel: number; ok: boolean }[] = []
-  let budget = false
   const run = (tf: number): DescentPlan => {
     const pl = solveDescent({ ...base, tf }, t0)
     tried.push({ tf, fuel: pl.fuel, ok: pl.converged && pl.slackMax <= 0.05 })
@@ -397,21 +470,19 @@ export const planDescent = (base: Omit<DescentProblem, "tf">, t0 = 0, range?: re
   }
   let best: DescentPlan | null = null
   const ok = (pl: DescentPlan): boolean => pl.converged && pl.slackMax <= 0.05
-  const consider = (pl: DescentPlan): void => { if (ok(pl) && (!best || pl.fuel < best.fuel)) best = pl }
+  // exact mode: least propellant; minimum-miss mode: least miss, then least propellant
+  const cost = (pl: DescentPlan): number => (pl.soft ? 1e4 * pl.termPos : 0) + pl.fuel
+  const consider = (pl: DescentPlan): void => { if (ok(pl) && (!best || cost(pl) < cost(best))) best = pl }
   const n = Math.max(2, grid)
-  for (let i = 0; i < n; i++) {
-    if (performance.now() > deadline && (best || i > 0)) { budget = true; break }
-    consider(run(lo + ((hi - lo) * i) / (n - 1)))
-  }
+  for (let i = 0; i < n; i++) consider(run(lo + ((hi - lo) * i) / (n - 1)))
   let step = (hi - lo) / (n - 1)
   for (let r = 0; r < refine && best; r++) {
     step *= 0.5
     const c = (best as DescentPlan).tf
-    if (performance.now() > deadline) { budget = true; break }
     consider(run(Math.max(lo, c - step)))
     consider(run(Math.min(hi, c + step)))
   }
-  return { plan: best, tried, budget }
+  return { plan: best, tried }
 }
 
 export interface DescentSample {
@@ -419,6 +490,8 @@ export interface DescentSample {
   readonly v: V3
   /** reference thrust acceleration (the feed-forward) */
   readonly u: V3
+  /** rate of the reference thrust acceleration (m/s³): attitude-rate feed-forward */
+  readonly uDot: V3
   /** time left on the plan (s) */
   readonly tgo: number
 }
@@ -437,41 +510,9 @@ export const sampleDescent = (pl: DescentPlan, t: number): DescentSample => {
     ]
   }
   const x = ax(0), y = ax(1), z = ax(2)
-  return { p: v3(x[0], y[0], z[0]), v: v3(x[1], y[1], z[1]), u: v3(x[2], y[2], z[2]), tgo: pl.tf - tau }
-}
-
-/**
- * 3-D quintic from (p0, v0) to (pf, vf) in T seconds with zero end-point acceleration.
- * Returns position, velocity and acceleration at τ ∈ [0, 1]. This is the terminal spline: it is C²,
- * so the acceleration feedforward is continuous and the engine gimbal has a smooth, feasible
- * reference all the way into the arms (the old terminal law was PD-only, with no feedforward).
- */
-export interface Quintic {
-  readonly p: (tau: number) => V3
-  readonly v: (tau: number) => V3
-  readonly a: (tau: number) => V3
-  readonly T: number
-}
-
-export const quintic = (p0: V3, v0: V3, pf: V3, vf: V3, T: number): Quintic => {
-  const T2 = T * T
-  const one = (pa: number, va: number, pb: number, vb: number): { c3: number; c4: number; c5: number } => {
-    const d = pb - pa
-    return { c3: 10 * d - 6 * va * T - 4 * vb * T, c4: -15 * d + 8 * va * T + 7 * vb * T, c5: 6 * d - 3 * va * T - 3 * vb * T }
-  }
-  const cx = one(p0.x, v0.x, pf.x, vf.x), cy = one(p0.y, v0.y, pf.y, vf.y), cz = one(p0.z, v0.z, pf.z, vf.z)
-  const at = (c: { c3: number; c4: number; c5: number }, pa: number, va: number, tau: number, kind: 0 | 1 | 2): number => {
-    const t3 = tau * tau * tau, t4 = t3 * tau, t5 = t4 * tau
-    if (kind === 0) return pa + va * T * tau + c.c3 * t3 + c.c4 * t4 + c.c5 * t5
-    if (kind === 1) return va + (3 * c.c3 * tau * tau + 4 * c.c4 * t3 + 5 * c.c5 * t4) / T
-    return (6 * c.c3 * tau + 12 * c.c4 * tau * tau + 20 * c.c5 * t3) / T2
-  }
-  return {
-    T,
-    p: (tau) => v3(at(cx, p0.x, v0.x, tau, 0), at(cy, p0.y, v0.y, tau, 0), at(cz, p0.z, v0.z, tau, 0)),
-    v: (tau) => v3(at(cx, p0.x, v0.x, tau, 1), at(cy, p0.y, v0.y, tau, 1), at(cz, p0.z, v0.z, tau, 1)),
-    a: (tau) => v3(at(cx, p0.x, v0.x, tau, 2), at(cy, p0.y, v0.y, tau, 2), at(cz, p0.z, v0.z, tau, 2)),
-  }
+  const inside = t - pl.t0 >= 0 && t - pl.t0 <= pl.tf
+  const ud = (a: number): number => (inside ? (pl.u[3 * (k + 1) + a] - pl.u[3 * k + a]) / pl.h : 0)
+  return { p: v3(x[0], y[0], z[0]), v: v3(x[1], y[1], z[1]), u: v3(x[2], y[2], z[2]), uDot: v3(ud(0), ud(1), ud(2)), tgo: pl.tf - tau }
 }
 
 export interface TrackGains {
@@ -502,11 +543,14 @@ export const fitThrust = (u: V3, lo: number, hi: number, tanTilt: number): V3 =>
   if (hn > hMax) { hx *= hMax / hn; hy *= hMax / hn }
   const mag = Math.hypot(hx, hy, uz)
   if (mag < lo) {
-    const need = Math.min(Math.sqrt(Math.max(0, lo * lo - uz * uz)), tanTilt * uz)
+    // The engine floor cannot be spent vertically: raising |u| along the current direction would
+    // over-decelerate and stall the descent (the old bug). Spend the mandatory surplus *laterally*,
+    // along the commanded horizontal direction (or +x if it is exactly zero), so the vertical
+    // component — the timed deceleration — is preserved.
     const h1 = Math.hypot(hx, hy)
-    if (h1 > 1e-6) { hx *= need / h1; hy *= need / h1 }
-    const m2 = Math.hypot(hx, hy, uz)
-    if (m2 < lo) { const k = lo / Math.max(m2, 1e-9); return v3(hx * k, hy * k, uz * k) }
+    const need = Math.min(Math.sqrt(Math.max(0, lo * lo - uz * uz)), tanTilt * uz)
+    const dx = h1 > 1e-6 ? hx / h1 : 1, dy = h1 > 1e-6 ? hy / h1 : 0
+    hx = dx * need; hy = dy * need
   }
   return v3(hx, hy, uz)
 }

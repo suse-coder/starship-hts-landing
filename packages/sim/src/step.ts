@@ -26,12 +26,15 @@ export const dtFor = (s: SimState, alt: number): number => {
     case "deorbitBurn":
       return 0.05
     case "entry":
-      return alt > 100e3 ? 0.1 : 0.02
+      // The entry is smooth and the attitude loop is fast; 0.035 s is ample and halves the step count
+      // (the whole mission must run in well under 30 s in the browser).
+      return alt > 100e3 ? 0.1 : 0.05
     case "loft":
     case "pitchUp":
+      return 0.04
     case "highAlpha":
     case "bellyFlop":
-      return 0.02
+      return 0.05
     case "flip":
     case "landing":
       return 0.01
@@ -123,7 +126,9 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     : null
   const mhdT = basis && basis !== s.mhdBasis ? s.t : s.mhdT
   // ---------- guidance ----------
-  const thrusts = s.eng.map((e, i) => engineThrust(veh.engines[i], e, atm.p, mp.xcg).thrust)
+  const engNow = s.eng.map((e, i) => engineThrust(veh.engines[i], e, atm.p, mp.xcg))
+  const thrusts = engNow.map((o) => o.thrust)
+  const engF = engNow.reduce((acc, o) => add(acc, o.F), ZERO)
   const accThrust = thrusts.reduce((a, b) => a + b, 0) / mp.m
   const nav: Nav = {
     t: s.t, r: s.r, v: s.v, q: s.q, w: s.w, I: mp.I, m: mp.m, xcg: mp.xcg, alt, up, east, north,
@@ -132,7 +137,7 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     seedLeft: s.cons.seed, propHeader: s.cons.loxHeader + s.cons.ch4Header,
     thrusts, spoolDone: s.eng.slice(0, 3).filter((e) => e.on).every((e) => e.spool >= 1), pinLoad: 0, pinLoadMin: 0, pinCount: 0, accThrust,
     mhdDrag: s.mhdOut.forceMag > 0 ? -dot(s.mhdOut.F, vhatB) : 0,
-    aeroF: aero.F, mhdF: s.mhdOut.F,
+    aeroF: aero.F, mhdF: s.mhdOut.F, engF,
   }
   // pin load from the previous contact solution is approximated by evaluating contact now
   const pinsNow = [1, -1].map((sg) => {
@@ -163,7 +168,10 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     mhdAuth = al.maxMoment / Math.max(Math.hypot(tauRes.y, tauRes.z), 1)
     tauRes = sub(tauRes, mhdOut.M)
   }
-  const engCmds: EngineCmd[] = s.eng.map((_, i) => cmd.engines[i] ?? { on: false, throttle: 0.4, gp: 0, gy: 0 })
+  // failure injection (design.engineOut): the engine loses its thrust and cannot be restarted
+  const eo = W.design.engineOut
+  const dead = (i: number): boolean => eo !== undefined && eo.index === i && s.t - g.mem.tFlip >= eo.afterFlip
+  const engCmds: EngineCmd[] = s.eng.map((_, i) => (dead(i) ? { on: false, throttle: 0.4, gp: 0, gy: 0 } : cmd.engines[i] ?? { on: false, throttle: 0.4, gp: 0, gy: 0 }))
   const engOut0 = thrusts.reduce((a, b) => a + b, 0)
   // cold-gas roll authority (strongest roll couple), with margin: the gimbal may not make more roll than this
   const rollCap = 0.7 * Math.max(...veh.couples.map((cp) => Math.abs(veh.thrusters[cp.a].thrust * (veh.thrusters[cp.a].pos.z * veh.thrusters[cp.a].dir.y - veh.thrusters[cp.a].pos.y * veh.thrusters[cp.a].dir.z) * 2)))

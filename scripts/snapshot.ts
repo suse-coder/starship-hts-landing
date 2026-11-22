@@ -14,8 +14,10 @@
  * Run: bun scripts/snapshot.ts
  */
 import { mkdirSync, statSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { DEFAULT_DESIGN } from "@ship/craft"
 import { N_CH, runMission } from "@ship/sim"
+import { physicsVersion } from "../packages/app/simVersion"
 
 const t0 = performance.now()
 let last = -1
@@ -29,6 +31,7 @@ process.stdout.write("\n")
 const r = recording
 const header = {
   format: 1,
+  version: physicsVersion(resolve(import.meta.dir, "..", "packages")),
   n: r.n,
   cells: r.cells,
   predK: r.predK,
