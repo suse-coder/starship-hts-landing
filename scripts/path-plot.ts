@@ -133,10 +133,19 @@ const panel = (spec: PanelSpec): void => {
 
 out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`)
 out.push(`<rect width="${W}" height="${H}" fill="${BG}"/>`)
-panel({ box: [70, 100, 880, 530], title: "SIDE — belly flop to catch (north vs height)", u: [-2200, 7200], v: [0, 25000], mode: "side" })
-panel({ box: [960, 100, 1730, 530], title: "SIDE — last 600 m (dashed = guidance plan)", u: [-420, 420], v: [0, 620], mode: "side" })
-panel({ box: [70, 660, 880, 1090], title: "PLAN — terminal ground track", u: [-420, 420], v: [-420, 420], mode: "plan" })
-panel({ box: [960, 660, 1730, 1090], title: "PLAN — belly flop ground track", u: [-4200, 4200], v: [-4200, 4200], mode: "plan" })
+const terminal = process.argv.includes("--terminal")
+if (terminal) {
+  // the last seconds only: where the overshoot lives
+  panel({ box: [70, 100, 880, 530], title: "SIDE — last 25 m (north vs height)", u: [-14, 14], v: [0, 26], mode: "side" })
+  panel({ box: [960, 100, 1730, 530], title: "SIDE — last 3 m (north vs height)", u: [-2.2, 2.2], v: [0, 3.2], mode: "side" })
+  panel({ box: [70, 660, 880, 1090], title: "PLAN — last 25 m (east vs north)", u: [-14, 14], v: [-14, 14], mode: "plan" })
+  panel({ box: [960, 660, 1730, 1090], title: "PLAN — last 3 m", u: [-2.2, 2.2], v: [-2.2, 2.2], mode: "plan" })
+} else {
+  panel({ box: [70, 100, 880, 530], title: "SIDE — belly flop to catch (north vs height)", u: [-2200, 7200], v: [0, 25000], mode: "side" })
+  panel({ box: [960, 100, 1730, 530], title: "SIDE — last 600 m (dashed = guidance plan)", u: [-420, 420], v: [0, 620], mode: "side" })
+  panel({ box: [70, 660, 880, 1090], title: "PLAN — terminal ground track", u: [-420, 420], v: [-420, 420], mode: "plan" })
+  panel({ box: [960, 660, 1730, 1090], title: "PLAN — belly flop ground track", u: [-4200, 4200], v: [-4200, 4200], mode: "plan" })
+}
 text(70, 40, `Ship 42 / Flight 15 — ${doc.wind ? "WIND" : "NO WIND"}`, 21, FG, "bold")
 text(470, 42, `${doc.summary.caught ? "CAUGHT" : "LOST"}  offset ${doc.summary.offset.toFixed(2)} m  ${doc.reason.slice(0, 52)}`, 15, doc.summary.caught ? CATCH : BAD)
 text(70, 1140, "cyan = flown path   orange dashed = guidance plan   grey = solid tower boxes   green + = catch point (arm rail top)", 13, DIM)
