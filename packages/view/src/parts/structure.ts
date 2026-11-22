@@ -37,15 +37,12 @@ const shieldDeck = (c: Ctx): THREE.Object3D => {
   // shape (x, y) → body (y, z); extrusion z → body x
   deck.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, LAYOUT.shieldDeck - 0.02, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1))
   kit.add(deck, MAT.steelDarkShell)
-  for (const h of holes) kit.add(torusX(h.r, 0.03, LAYOUT.shieldDeck - 0.02, 6, 40).translate(0, h.y, h.z), MAT.steelDark)
   // underside stiffeners between the holes (outboard of each SL hole, inboard of each RVac hole)
   for (const e of c.v.engines) {
     const phi = Math.atan2(e.gimbal.z, e.gimbal.y)
     const [r0, r1] = e.kind === "SL" ? [2.2, 4.42] : [0.12, 2.26]
     kit.add(boxGeo(0.07, r1 - r0, 0.05), MAT.steelDark, axialFrame(LAYOUT.shieldDeck - 0.055, phi, (r0 + r1) / 2))
   }
-  // aft skirt edge ring (L-section inside the skirt lip)
-  kit.add(latheGeo(loopCCW([[4.34, 0.0], [R - 0.004, 0.0], [R - 0.004, 0.16], [4.46, 0.16], [4.46, 0.045], [4.34, 0.045]]), 96), MAT.steelDark)
   return kit.build("shieldDeck")
 }
 
@@ -68,17 +65,7 @@ const canGeo = (cy: number, cz: number, rad: number, xBot: number, seg = 40, xMi
   return g
 }
 
-/** 12 engine shield compartments (one can per engine: SL Ø 2.2, RVac Ø 2.24) + skirt ring frames */
-const compartments = (c: Ctx): THREE.Object3D => {
-  const kit = new Kit()
-  for (const e of c.v.engines) {
-    const rad = e.kind === "SL" ? 1.1 : 1.12
-    kit.add(canGeo(e.gimbal.y, e.gimbal.z, rad, LAYOUT.shieldDeck + 0.02), MAT.steelDarkShell)
-    for (const x of [2.5, 3.3]) kit.add(torusX(rad + 0.012, 0.018, x, 3, 36).translate(0, e.gimbal.y, e.gimbal.z), MAT.steelDark)
-  }
-  for (const x of [LAYOUT.ringH * 2, LAYOUT.ringH * 2 + 0.9]) kit.add(latheGeo(loopCCW([[4.4, x - 0.04], [R - 0.004, x - 0.04], [R - 0.004, x + 0.04], [4.4, x + 0.04]]), 96), MAT.steelDark)
-  return kit.build("compartments")
-}
+
 
 /** 12 purge vents ×24: louvred grilles 0.40 × 0.25 on the skirt at x 2.2, φ 15° steps (local X axial, Y out, Z tangential) */
 const vents = (c: Ctx): THREE.Object3D => {
@@ -265,9 +252,8 @@ const picaCloseout = (c: Ctx): THREE.Object3D => {
 
 export const structureParts = (c: Ctx): PartSpec[] => [
   { id: "seams", label: "11 Weld seams W01–W20 + longitudinal ring seams ×21", asm: "structure", obj: seams(c), internal: false },
-  { id: "shieldDeck", label: "12 Engine-bay shield deck + aft skirt edge ring", asm: "structure", obj: shieldDeck(c), internal: false },
+  { id: "shieldDeck", label: "12 Engine-bay shield deck (open nozzle holes)", asm: "structure", obj: shieldDeck(c), internal: false },
   { id: "vents", label: "12 Engine-bay purge vents ×24 (louvred, x 2.2)", asm: "structure", obj: vents(c), internal: false },
-  { id: "skirt", label: "12 Engine shield compartments ×6 + skirt frames", asm: "structure", obj: compartments(c), internal: true, dist: 0, axial: -8 },
   { id: "puck", label: "13 Thrust puck Ø 3.6 + thrust cone + TVC posts + RVac pads", asm: "structure", obj: thrustStructure(c), internal: true, dist: 6, axial: -6 },
   { id: "aftDome", label: "13 Aft dome (LOX tank bottom, depth 3.8)", asm: "structure", obj: domeShell(LAYOUT.aftDome.apex, LAYOUT.aftDome.depth, 1, "aftDome"), internal: true, dist: 0, axial: -3 },
   {

@@ -150,7 +150,11 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   const thrustSm = new Float64Array(v.engines.filter((e) => e.kind === "SL").length)
   let pAmbSm = 101325
   for (const e of v.engines) {
-    const rp = makeRaptor(e.kind === "SL" ? "SL" : "RVac")
+    // Only the three sea-level Raptors are shown: they are the gimballing engines used from the flip
+    // to the catch. The vacuum engines (no gimbal, not fired on the return) and their large bells
+    // read as "rings" at the aft; their mounting pads stay in the thrust structure.
+    if (e.kind !== "SL") continue
+    const rp = makeRaptor("SL")
     const g = new THREE.Group()
     g.position.set(e.gimbal.x, e.gimbal.y, e.gimbal.z)
     g.add(rp.group)
@@ -166,27 +170,6 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       cone.renderOrder = 5
       g.add(cone)
       plumes.push({ mesh: cone, mat, len: rp.length, exitR: rp.exitR })
-      // Gimballed bell-fin shroud: a short duct around the exit that moves with the gimbal, so
-      // tilting the bell turns more base flow than the bare nozzle (the ductFactor in the model).
-      if (v.bellFins) {
-        const bb = new THREE.Box3().setFromObject(rp.group)
-        const duct = new THREE.Mesh(
-          new THREE.CylinderGeometry(rp.exitR * 1.22, rp.exitR * 1.06, 1.2, 24, 1, true),
-          MAT.steelDarkShell,
-        )
-        duct.rotation.z = Math.PI / 2
-        duct.position.x = bb.min.x - 0.35
-        duct.castShadow = true
-        g.add(duct)
-        // three radial splitter vanes on the shroud
-        for (let k = 0; k < 3; k++) {
-          const a2 = (k * 2 * Math.PI) / 3
-          const vane = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.04, rp.exitR * 0.45), MAT.steelDark)
-          vane.position.set(bb.min.x - 0.35, Math.cos(a2) * rp.exitR * 1.1, Math.sin(a2) * rp.exitR * 1.1)
-          vane.rotation.x = -a2
-          g.add(vane)
-        }
-      }
       slGroups.push(g)
     }
     layer("engines").add(g)

@@ -191,7 +191,6 @@ export const makeRaptor = (kind: EngineKind): { group: THREE.Group; length: numb
   const xMan = tx - fMan * (tx + d.length), rMan = bellR(d, fMan) + w
   kit.add(tubeGeo([v3(-0.91, -0.16, zc - 0.18), v3(-1.25, -0.22, zc - 0.14), v3(-1.7, -0.2, -rMan - 0.12), v3(xMan + 0.04, -0.12, -rMan - 0.04)], 0.048, 16, 6), MAT.alloy)
   kit.add(boxGeo(0.14, 0.12, 0.12, new THREE.Matrix4().makeTranslation(-1.25, -0.3, zc - 0.14)), MAT.black) // MFV actuator
-  kit.add(torusX(rMan + 0.01, 0.042, xMan, 6, 32), MAT.alloyDark) // regen inlet manifold
   kit.add(tubeGeo([v3(-0.74, -0.12, -0.26), v3(-0.58, -0.2, -0.42), v3(-0.3, -0.16, zc + 0.02), v3(-0.14, -0.06, zc), v3(-0.16, 0, zc)], 0.045, 14, 6), MAT.alloy)
   // engine controller + harness
   kit.add(boxGeo(0.26, 0.12, 0.2, new THREE.Matrix4().makeTranslation(-0.3, -0.46, 0)), MAT.black)
@@ -218,13 +217,7 @@ export const makeRaptor = (kind: EngineKind): { group: THREE.Group; length: numb
   if (d.regen < 1) {
     // Nb extension with four hat-section stiffener bands (spec/07 row 22)
     kit.add(latheGeo(full.filter(([, x]) => x <= xSplit + 1e-6), 48), MAT.niobium)
-    kit.add(torusX(bellR(d, d.regen) + w + 0.01, 0.035, xSplit, 6, 48), MAT.steelDark) // regen/extension joint flange
-    for (const f of [0.46, 0.62, 0.78, 0.91]) {
-      const xb = tx - f * Ln, rb = bellR(d, f)
-      kit.add(latheGeo([[rb + 0.002, xb - 0.045], [rb + 0.05, xb - 0.03], [rb + 0.05, xb + 0.03], [rb + 0.002, xb + 0.045]], 48), MAT.steelDark)
-    }
   }
-  kit.add(torusX(d.exitR + 0.008, kind === "SL" ? 0.022 : 0.03, -d.length + 0.012, 6, kind === "SL" ? 40 : 48), MAT.alloyDark)
   // ---- TVC actuators (SL, live) or rigid struts (RVac)
   for (let k = 0; k < 2; k++) {
     const [cx, cr] = MOUNT[kind].clevis
