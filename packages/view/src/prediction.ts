@@ -76,7 +76,30 @@ export const makePathOverlay = (): PathOverlay => {
   }
 
   const actual = makeLine(0x4fe6ff, 0.9)
-  // pale ice-white (not additive: additive white disappears over the studio/physical-sky white)
+  // The MPC plan is drawn as a *channel* (a swept tube), not a hairline: it is the path the ship is
+  // being flown along, and a tube shows its direction and clearance against the tower. Fixed
+  // allocation: RINGS rings × SIDES vertices, positions rewritten in place every frame.
+  const RINGS = 48, SIDES = 8, RADIUS = 0.55
+  const tubePos = new Float32Array(RINGS * SIDES * 3)
+  const tubeGeo = new THREE.BufferGeometry()
+  const tubeAttr = new THREE.BufferAttribute(tubePos, 3)
+  tubeAttr.setUsage(THREE.DynamicDrawUsage)
+  tubeGeo.setAttribute("position", tubeAttr)
+  const tubeIdx: number[] = []
+  for (let r = 0; r + 1 < RINGS; r++) {
+    for (let k = 0; k < SIDES; k++) {
+      const a = r * SIDES + k, b = r * SIDES + ((k + 1) % SIDES)
+      const c = (r + 1) * SIDES + k, d = (r + 1) * SIDES + ((k + 1) % SIDES)
+      tubeIdx.push(a, c, b, b, c, d)
+    }
+  }
+  tubeGeo.setIndex(tubeIdx)
+  const tubeMat = new THREE.MeshBasicMaterial({ color: 0xdcf4ff, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide })
+  const planTube = new THREE.Mesh(tubeGeo, tubeMat)
+  planTube.frustumCulled = false
+  planTube.renderOrder = 9
+  planTube.visible = false
+  group.add(planTube)
   const plan = makeLine(0xdcf4ff, 1.0)
   const tmp = new THREE.Vector3()
   let on = true
@@ -97,11 +120,34 @@ export const makePathOverlay = (): PathOverlay => {
     ln.line.visible = on
   }
 
+  const tubeTmp = new THREE.Vector3(), tubeTan = new THREE.Vector3(), tubeN = new THREE.Vector3(), tubeB = new THREE.Vector3(), tubeUp = new THREE.Vector3(0, 1, 0)
+  const writeTube = (): void => {
+    for (let r = 0; r < RINGS; r++) {
+      const u = r / (RINGS - 1)
+      plan.curve.getPoint(u, tubeTmp)
+      plan.curve.getTangent(u, tubeTan).normalize()
+      tubeN.crossVectors(tubeTan, tubeUp)
+      if (tubeN.lengthSq() < 1e-6) tubeN.set(1, 0, 0)
+      tubeN.normalize()
+      tubeB.crossVectors(tubeTan, tubeN).normalize()
+      for (let k = 0; k < SIDES; k++) {
+        const a = (2 * Math.PI * k) / SIDES
+        const o = (r * SIDES + k) * 3
+        tubePos[o] = tubeTmp.x + RADIUS * (Math.cos(a) * tubeN.x + Math.sin(a) * tubeB.x)
+        tubePos[o + 1] = tubeTmp.y + RADIUS * (Math.cos(a) * tubeN.y + Math.sin(a) * tubeB.y)
+        tubePos[o + 2] = tubeTmp.z + RADIUS * (Math.cos(a) * tubeN.z + Math.sin(a) * tubeB.z)
+      }
+    }
+    tubeAttr.needsUpdate = true
+    planTube.visible = on
+  }
+
   const update = (rec: Recording, i: number, f: number): void => {
     const n = rec.n
     if (n < 2) {
       actual.line.visible = false
       plan.line.visible = false
+      planTube.visible = false
       return
     }
     const pe = rec.data[CH.pe], pn = rec.data[CH.pn], pu = rec.data[CH.pu]
@@ -140,7 +186,8 @@ export const makePathOverlay = (): PathOverlay => {
       }
     }
     plan.line.visible = on && hasPlan
-    if (plan.line.visible) writeCurve(plan)
+    planTube.visible = on && hasPlan
+    if (hasPlan) { writeCurve(plan); writeTube() }
   }
 
   return {

@@ -98,7 +98,9 @@ export const LAND = {
    * there the ship is centred and lowered onto the arms (hold-until-centred). Centred means inside
    * what the tracking arms can still reach (`across`, m) and the rails' length (`along`, m), slow.
    */
-  hover: { h: 1.0, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.25, kd: 0.9, aMax: 0.8, lead: 0.8, settle: 1.2, settleV: 0.3, settleKd: 0.8 },
+  hover: { h: 1.0, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.25, kd: 0.9, aMax: 0.8, lead: 0.8, settle: 1.2, settleV: 0.3, settleKd: 0.8,
+    /** below this height the entry is vertical: small lateral corrections only (m, m/s²) */
+    verticalBelow: 12, lateralCap: 1.2 },
   /** lateral authority the sink coupling assumes (m/s²): the measured single-engine value, not G·tan(tilt) */
 
   /**
@@ -389,6 +391,12 @@ export const fieldCommand = (rel: V3, vel: V3, e: FieldEnv): { u: V3; tRail: num
     ay = clamp(band(rel.y, vel.y), -H.aMax, H.aMax)
   }
   const uz = clamp(G_DESCENT + F.kz * (vzT - vel.z) - e.ez, 0.3 * e.lo, e.hi)
+  // near the rails the entry is vertical: the lateral channel only trims the last centimetres, so
+  // the ship falls into the arms from above instead of swinging across them
+  if (rel.z < H.verticalBelow) {
+    const c = H.lateralCap, am0 = Math.hypot(ax, ay)
+    if (am0 > c) { ax *= c / am0; ay *= c / am0 }
+  }
   const tiltMax = (rel.z > F.hLow ? F.tilt : F.tiltLow + (F.tilt - F.tiltLow) * Math.max(rel.z, 0) / F.hLow) * Math.PI / 180
   const aMax = Math.min(Math.max(uz, e.lo) * Math.tan(tiltMax), e.aLat ?? Infinity), am = Math.hypot(ax, ay), sc = am > aMax ? aMax / am : 1
   return { u: fitThrust(v3(ax * sc, ay * sc, uz), e.lo, e.hi, Math.tan(tiltMax + 5 * Math.PI / 180)), tRail }
