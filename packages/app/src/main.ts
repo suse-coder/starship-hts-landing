@@ -498,8 +498,8 @@ const buildSideView = (r: Recording): void => {
   const zoom = { x0: Math.round(w * 0.58), y0: 42, x1: w - 26, y1: h - 46 }
   sideText(g, "FULL PATH", full.x0, 18, "left", "#dff3ff", 12)
   sideText(g, "altitude vs distance to the catch", full.x0 + 88, 18, "left", "#8fb6cc", 10)
-  sideText(g, "FINAL 10 km", zoom.x0, 18, "left", "#dff3ff", 12)
-  sideText(g, "last 10 km · north offset vs height (arms 112 m)", zoom.x0 + 82, 18, "left", "#8fb6cc", 10)
+  sideText(g, "FINAL 5 km", zoom.x0, 18, "left", "#dff3ff", 12)
+  sideText(g, "last 5 km · north offset vs height (arms 112 m)", zoom.x0 + 80, 18, "left", "#8fb6cc", 10)
   // ---- full path
   let rmax = 1, umax = 1
   for (let i = 0; i < r.n; i++) { const rr = Math.hypot(pe[i], pn[i]); if (rr > rmax) rmax = rr; if (pu[i] > umax) umax = pu[i] }
@@ -528,7 +528,7 @@ const buildSideView = (r: Recording): void => {
   // ---- final 2 km
   // 5 km window: the user wants the end of the approach visible together with the tower (the
   // overshoot is hundreds of metres to kilometres, not tens)
-  const nmin = -5000, nmax = 5000, zumax = 5000
+  const nmin = -2500, nmax = 2500, zumax = 2500
   const ZX = (n: number): number => zoom.x0 + ((n - nmin) / (nmax - nmin)) * (zoom.x1 - zoom.x0)
   const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / zumax) * (zoom.y1 - zoom.y0)
   g.strokeStyle = "rgba(120,150,170,0.45)"; g.lineWidth = 1
@@ -557,7 +557,7 @@ const buildSideView = (r: Recording): void => {
   // path in the zoom (only samples near the pad)
   g.beginPath(); let started = false
   for (let i = 0; i < r.n; i += step) {
-    if (Math.abs(pn[i]) > 5200) continue
+    if (Math.abs(pn[i]) > 2700) continue
     const x = ZX(pn[i]), y = ZY(pu[i])
     if (!started) { g.moveTo(x, y); started = true } else g.lineTo(x, y)
   }
@@ -585,8 +585,8 @@ const drawSideView = (tt: number): void => {
   for (let k = 0; k < r.n; k++) { const rr = Math.hypot(pe[k], pn[k]); if (rr > rmax) rmax = rr; if (pu[k] > umax) umax = pu[k] }
   const FX = (rr: number): number => full.x1 - (rr / rmax) * (full.x1 - full.x0)
   const FY = (u: number): number => full.y1 - Math.max(u, 0) / umax * (full.y1 - full.y0)
-  const ZX = (n: number): number => zoom.x0 + ((n + 5000) / 10000) * (zoom.x1 - zoom.x0)
-  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / 5000) * (zoom.y1 - zoom.y0)
+  const ZX = (n: number): number => zoom.x0 + ((n + 2500) / 5000) * (zoom.x1 - zoom.x0)
+  const ZY = (u: number): number => zoom.y1 - (Math.max(u, 0) / 2500) * (zoom.y1 - zoom.y0)
   // flown part, brighter
   const step = Math.max(1, Math.floor(r.n / 900))
   g.beginPath()
