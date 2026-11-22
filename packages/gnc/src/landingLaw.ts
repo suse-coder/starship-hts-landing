@@ -98,7 +98,7 @@ export const LAND = {
    * there the ship is centred and lowered onto the arms (hold-until-centred). Centred means inside
    * what the tracking arms can still reach (`across`, m) and the rails' length (`along`, m), slow.
    */
-  hover: { h: 6, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.05, kd: 0.6, aMax: 0.8 },
+  hover: { h: 6, v: 1.0, across: 4, along: 8, vh: 0.9, down: 1.2, kp: 0.12, kd: 1.1, aMax: 0.8 },
   /**
    * Lateral tracking gains of the single-engine descent. The tilt → attitude path of one gimbal has
    * a lag of over a second; a lateral loop at the two-engine gains (0.3 / 1.0, ω_n 0.55 rad/s) sat
