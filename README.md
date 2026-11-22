@@ -8,7 +8,7 @@
 > The flap model and its wiring remain in the tree but are not flown (`FLIGHT_DESIGN`).
 >
 > The recorded no-wind mission **catches**: flip complete 363 m above the rails, 111 m off; arms
-> close at 26 m; both pins bear on the rails at 0.18 m/s, offset **1.5 m**, with **5.8 t** of landing
+> close at 26 m; both pins bear on the rails at 0.14 m/s, offset **1.4 m**, with **5.8 t** of landing
 > propellant left. Nitrogen: 5000 → 3123 kg over the whole mission (coast 213 kg, high-α 949 kg,
 > belly 415 kg, landing ≈300 kg).
 >
