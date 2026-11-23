@@ -365,6 +365,8 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
   let windMax = 1
   let windMin = 0
   let windP: WindParams = { scaleMean: 1, turbulence: 1, seed: 1 }
+  /** the recording was flown in moving air (mean wind or turbulence): only then is there a wind field to show */
+  let windSimulated = true
   const studio = studioBackground()
   const black = new THREE.Color(0x000000)
   const HOME = new THREE.Vector3(-0.62, 0.36, 0.7)
@@ -388,6 +390,7 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     duration = r.data[CH.t][r.n - 1]
     const meta = r.meta.vehicle as { design: DesignParams }
     windP = { scaleMean: meta.design.windScale, turbulence: meta.design.turbulence, seed: meta.design.seed }
+    windSimulated = meta.design.windScale > 0 || meta.design.turbulence > 0
     const vehicle = makeVehicle(meta.design)
     if (ship) shipFrame.remove(ship.root)
     ship = makeShip(vehicle, makeThermalGrid(vehicle))
@@ -652,7 +655,9 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     // wind arrows fade in below 40 km (fully shown below 32 km) instead of popping in
     const windK = Math.max(0, Math.min(1, (40e3 - alt) / 8e3)) * Math.max(0, 1 - explode * 20)
     windField.setOpacity(windK)
-    windField.mesh.visible = windOn && mode !== "globe" && windK > 0.01
+    // No arrows for a still-air run: a field of zero-length arrows (and its legend) would claim a
+    // wind the simulation never had.
+    windField.mesh.visible = windSimulated && windOn && mode !== "globe" && windK > 0.01
     if (windField.mesh.visible) {
       const range = windField.update((_de, _dn, du) => {
         const m = meanWindEnu(Math.max(0, alt + du), windP)

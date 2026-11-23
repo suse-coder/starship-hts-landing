@@ -11,9 +11,10 @@
  *   f32[] pred: n × predK × 3
  *   u8[]  predHas: n
  *
- * The recording is the **no-wind** mission: it is what the app plays when its "No wind" box is
- * ticked (the default), so a visitor sees the catch without waiting for a simulation. With wind on,
- * the app re-simulates.
+ * The recording is the **default mission with wind** (November Gulf climatology + Dryden
+ * turbulence, fixed seed): it is what the app plays with its "No wind" box unticked (the default),
+ * so a visitor sees the catch without waiting. The header names the wind it was flown in, and the
+ * app plays it only for that setting; with "No wind" ticked the app re-simulates.
  *
  * Run: bun scripts/snapshot.ts
  */
@@ -25,7 +26,8 @@ import { physicsVersion } from "../packages/app/simVersion"
 
 const t0 = performance.now()
 let last = -1
-const { recording } = runMission({ ...FLIGHT_DESIGN, windScale: 0, turbulence: 0 }, (p) => {
+const design = FLIGHT_DESIGN
+const { recording } = runMission(design, (p) => {
   if (p.stage === "simulating") {
     const pct = Math.floor(p.fraction * 20) * 5
     if (pct !== last) { last = pct; process.stdout.write(`\r  simulating ${pct}%  ${p.phase} @ ${(p.alt / 1000).toFixed(0)} km   `) }
@@ -40,6 +42,7 @@ const header = {
   cells: r.cells,
   predK: r.predK,
   ch: N_CH,
+  wind: { scale: design.windScale, turbulence: design.turbulence, seed: design.seed },
   events: r.events,
   meta: { ...r.meta, wallClockMs: Math.round(performance.now() - t0) },
 }

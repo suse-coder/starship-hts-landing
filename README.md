@@ -1,6 +1,6 @@
 # Ship 42 — flapless Starship return and catch simulation
 
-> ## ⚠️ WORK IN PROGRESS — no flaps, cold gas until the 200 m ring, caught in still air
+> ## ⚠️ WORK IN PROGRESS — no flaps, cold gas for roll on one engine, caught with the default wind and in still air (one tuned point)
 >
 > **Design decision (2026-11-22):** the ship flies **without flaps**. The cold-gas RCS is the attitude
 > actuator from the deorbit flip until the ship is inside the **200 m radius above the tower**
@@ -42,9 +42,9 @@ faked `caught`.
 
 | Item | State (2026-11-23) |
 |---|---|
-| M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps; cold gas for attitude until the flip, then for roll only); windy case open |
-| Recorded no-wind mission (`recording.bin`) | **`caught`**: flip-and-stop complete **1205 m** above the rails, 10 m off; at **1 km** the pins are **2.5 m** from the axis at 0.5 m/s lateral; then a vertical fall and a hoverslam — the pins touch the closed rails at ≈ 0.7 m/s, square to the arms (pin-axis error 0.3° below 500 m, 0.0° at the rails), offset **0.04 m**, 0.5 s below 2 m/s, never climbing; engine cut on pin contact (thrust gone 0.44 s later), the ship then sags 4.7 cm on the rails, slides 1 cm and the locked arms do not move; **5.0 t** of the 26 t landing propellant left |
-| Windy design (default wind scale) | `lost`: delivery ≈ 550–700 m off, descent runs out of propellant ≈ 5 m above the rails |
+| M3 — flip, landing, terminal, catch | **CAUGHT with the default wind and in still air** (no flaps; cold gas for attitude until the flip, then for roll only) — one tuned point, not yet robust |
+| Recorded mission (`recording.bin`, **default wind**: November Gulf climatology + Dryden turbulence, seed 42) | **`caught`**: flip-and-stop complete **1133 m** above the rails, 19 m off; vertical fall and hoverslam in 6–7 m/s of crosswind; pins on the closed arms at **0.48 m** offset, square to the arms (pin-axis error ≤ 0.9° above 500 m, 0.01° at the rails); engine cut on pin contact, 4.8 cm of sag, arms locked; **5.1 t** of landing propellant left. The page plays this run; ticking **No wind** re-simulates in still air (caught at 0.09 m, 5.0 t left) |
+| Wind robustness | entry aim × flip gate grid with the default wind: **5 of 15** points catch; the flown point (aim 1400 m, gate 1500 m) is the one that catches in both wind and still air and whose neighbours catch most. The glide hand-over is the fragile part: 40 kg of extra mass moved the windy delivery by 300 m |
 | Delivery method | bank-plan aim corrected by verified 6-DOF rollouts → belly-flop plan by defect correction (fast model proposes, rollout decides) → nose pointed at the axis → flip ignited when its stop point reaches the axis → two-engine flip-and-stop → single-engine descent law on the verified pin-chain model. **Tuned point, not yet robust:** of 12 neighbouring tunings of the entry aim and gate, 5 delivered inside the belly flop's reach |
 | TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
 | T‑mc (20-run wind/κ/B/mass ensemble) | **not run** |
@@ -194,14 +194,20 @@ the landing and not to what 2 800 s of entry handed it.
   of its yaw torque). Without gas a 10 m correction across the rails left 0.7°/s of roll, which
   turned the pins 26° off the rails by touchdown: position 0.01 m, catch lost. The descent
   therefore keeps the cold-gas roll couples on (pitch and yaw stay on the gimbal) and they hold the
-  pin azimuth from the hand-over down, not only near the arms: the two-engine flip hands the pins
-  over within ≈ 4° of the rails, the first single-engine correction rolls the hull up to 15°
-  through the gimbal's coupling, and the couples have it back inside 0.3° by 500 m. This is a
-  deliberate deviation from "Raptors only inside the 200 m ring"; the alternative is a second
-  running engine, which cannot throttle below 1.5 g and so cannot fall into the arms.
+  pin azimuth from the hand-over down. In crosswind the gimbal yaws all the way down to hold the
+  air's moment on the tilted hull, and that yaw rolls the hull continuously: with the 4 kN roll
+  thrusters (36 kN·m) the couples sat saturated from 800 m and the pins came in 12° out of square
+  (3° at the rails). The four roll thrusters are therefore rated 8 kN (72 kN·m, +40 kg assumed);
+  outside the single-engine stage the flight software fires them only to the old 36 kN·m, which
+  is what the glide's bank planner assumes. Measured with the default wind: ≤ 0.9° above 500 m,
+  0.01° at the rails. Keeping the other running engine instead (it couples differently) was tried
+  and was worse in this wind (15°). This is a deliberate deviation from "Raptors only inside the
+  200 m ring"; the alternative is a second running engine, which cannot throttle below 1.5 g and so
+  cannot fall into the arms.
 - **Not robust yet.** The hand-over from the high-α glide is sensitive: a change of metres in a
   rolled-out prediction can flip a decision and move the belly-flop start by kilometres. The flown
-  tuning (entry aim 1500 m, gate 1550 m) catches; so did 5 of the 12 neighbouring points tried.
+  tuning (entry aim 1400 m, gate 1500 m) catches with the default wind and in still air; 5 of 15
+  neighbouring points catch with wind.
 
 ## Documentation
 

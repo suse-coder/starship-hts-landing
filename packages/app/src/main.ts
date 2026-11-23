@@ -95,7 +95,7 @@ const spin = (ts: number): void => { if (!loading) return; drawSketch(ts / 180);
 requestAnimationFrame(spin)
 
 const noWindBox = $<HTMLInputElement>("nowind")
-/** the design actually run: the UI can zero the wind for deterministic model/guidance work */
+/** the design actually run: wind on by default; the UI can zero it for deterministic model/guidance work */
 const designNow = (): DesignParams => ({
   ...FLIGHT_DESIGN,
   windScale: noWindBox.checked ? 0 : DEFAULT_DESIGN.windScale,
@@ -129,9 +129,9 @@ const boot = async (force: boolean): Promise<void> => {
     // A precomputed recording (scripts/snapshot.ts, committed as public/recording.bin) is what a
     // static Pages visitor plays directly — no worker, no re-simulation, no waiting.
     $("pstatus").textContent = "loading the recorded mission…"
-    // the committed recording is the no-wind mission (the default). With wind on the design differs,
-    // so that run is simulated from the same code instead of played back.
-    const snap = noWindBox.checked ? await loadSnapshot() : null
+    // the committed recording is the default mission with wind; it is played only for the wind it
+    // was flown in (loadSnapshot checks), so "No wind" ticked runs that mission from the same code
+    const snap = await loadSnapshot(design)
     if (snap) {
       loading = false
       $("loading").classList.add("hidden")
@@ -355,7 +355,11 @@ const GROUPS: readonly (readonly [string, readonly Row[]])[] = [
   ["Catch · Mechazilla", [
     ["range to tower", (r, tt) => { const d = Math.hypot(V("pe")(r, tt), V("pn")(r, tt)); return d > 2000 ? `${(d / 1000).toFixed(1)} km` : `${d.toFixed(0)} m` }],
     ["pins above rails", (r, tt) => (Math.hypot(V("pe")(r, tt), V("pn")(r, tt)) < 3000 ? `${V("pinZ")(r, tt).toFixed(1)} m` : "—")], ["arms open", f("arms", 100, 0, "%")], ["pin load", f("pinLoad", 1e-3, 0, "kN")],
-    ["wind E/N", (r, tt) => `${V("windE")(r, tt).toFixed(1)} / ${V("windN")(r, tt).toFixed(1)} m/s`],
+    ["wind E/N", (r, tt) => {
+      const d = (r.meta.vehicle as { design?: { windScale: number; turbulence: number } }).design
+      if (d && d.windScale === 0 && d.turbulence === 0) return "none (still air)"
+      return `${V("windE")(r, tt).toFixed(1)} / ${V("windN")(r, tt).toFixed(1)} m/s`
+    }],
   ]],
 ]
 const cells: HTMLSpanElement[] = []

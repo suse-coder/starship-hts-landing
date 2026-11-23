@@ -1,5 +1,5 @@
 import { type V3, v3, qrot, norm } from "@ship/math"
-import { fVac100 } from "@ship/craft"
+import { fVac100, massProps } from "@ship/craft"
 import { CH, step, type SimState, type World } from "@ship/sim"
 import { aeroWrench } from "@ship/aero"
 import { landingAero } from "@ship/gnc"
@@ -50,7 +50,13 @@ export const identifyPlant = (engines: readonly number[], throttle: number, step
   const rig = landingRig({ pin: v3(0, 0, 600), vel: v3(0, 0, 0), engines, throttle, header })
   const W0 = rig.world
   const veh = W0.vehicle
-  const xcg = rig.mass.xcg
+  // The bare plant: no cold gas. With the roll thrusters live the flight software cancels the
+  // engine's roll coupling during the step and the identification measures the controller instead
+  // (it did, once the roll couples were made strong enough to hold it). Every quantity below uses
+  // the mass properties of that state.
+  const cons0 = { ...rig.state.cons, n2: 0 }
+  const mpBare = massProps(veh, cons0)
+  const xcg = mpBare.xcg
   const trims = [0, 1, 2].map((i) => (engines.length === 1 ? trimGimbal(W0, i, xcg) : { gp: 0, gy: 0 }))
   const t0 = rig.state.t
   const tStep = t0 + 0.3
@@ -59,7 +65,7 @@ export const identifyPlant = (engines: readonly number[], throttle: number, step
   // the second engine of a two-engine identification (measured T/m 11.4 against a model 13.7 —
   // a 17 % "model error" that was the test, not the model).
   const W: World = withActuators(W0, (t, cmds) => cmds.map((c, i) => ({ ...c, on: engines.includes(i), throttle, gp: trims[i].gp, gy: trims[i].gy + (t >= tStep ? stepDeg * DEG : 0) })))
-  let s: SimState = rig.state
+  let s: SimState = { ...rig.state, cons: cons0 }
   const ts: number[] = [], wz: number[] = [], wx: number[] = [], vy: number[] = [], vpin: number[] = [], vu0: number[] = [], tu: number[] = []
   const tArrive = tStep + (stepDeg * DEG) / veh.engines[0].gimbalRate + 0.02
   while (s.t < tArrive + 0.4) {
@@ -77,7 +83,7 @@ export const identifyPlant = (engines: readonly number[], throttle: number, step
     }
     s = o.s
   }
-  const m = rig.mass.m, I = rig.mass.I.y
+  const m = mpBare.m, I = mpBare.I.y
   const L = xcg - veh.engines[0].gimbal.x
   const nE = engines.length
   const tModel = nE * (throttle * fVac100(veh.engines[0]) - 101325 * veh.engines[0].exitArea)

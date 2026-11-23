@@ -752,7 +752,7 @@ export const DEFAULT_FLIP_GATE: FlipGate = {
   gateLat: LANDING_LAT_DESIGN,
   flipDv: FLIP_DV,
   flipFall: FLIP_FALL,
-  flipComplete: 1550,
+  flipComplete: 1500,
 }
 
 export const flipAltitude = (vz: number, gate: FlipGate = DEFAULT_FLIP_GATE): number => {

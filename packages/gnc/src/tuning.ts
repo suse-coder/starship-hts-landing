@@ -129,10 +129,10 @@ const D = Math.PI / 180
  */
 export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "aimEntry", kind: "number", min: 0, max: 400e3, default: 180e3, unit: "m", group: "entry", description: "Entry predictor–corrector downrange bias past the pad." },
-  { key: "aimHigh", kind: "number", min: 0, max: 5e3, default: 1500, unit: "m", group: "entry", description: "High-α hand-over aim short of the pad (m). Measured: 900 m put the flip 1.1 km off; 300 m puts it 260 m off with room to brake the flip kick." },
+  { key: "aimHigh", kind: "number", min: 0, max: 5e3, default: 1400, unit: "m", group: "entry", description: "High-α hand-over aim short of the pad (m). Measured: 900 m put the flip 1.1 km off; 300 m puts it 260 m off with room to brake the flip kick." },
   { key: "glideZeta", kind: "number", min: 0.05, max: 2, default: 0.3, unit: "", group: "entry", description: "High-α altitude-rate damping ratio of the phugoid law." },
   { key: "dvBurn", kind: "number", min: 80, max: 140, default: 108, unit: "m/s", group: "deorbit", description: "Deorbit retrograde Δv target (entry energy)." },
-  { key: "bellyPlanEnd", kind: "number", min: 300, max: 3000, default: 2550, unit: "m", group: "belly", description: "Belly-flop plan end above the catch plane; deliberately decoupled from the flip gate." },
+  { key: "bellyPlanEnd", kind: "number", min: 300, max: 3000, default: 2500, unit: "m", group: "belly", description: "Belly-flop plan end above the catch plane; deliberately decoupled from the flip gate." },
   { key: "bellyBankRateDeg", kind: "number", min: 0.3, max: 6, default: 1.8, unit: "deg/s", group: "belly", description: "Belly-flop lift-heading slew rate about v̂ (cold gas)." },
   { key: "bellyAlignH", kind: "number", min: 300, max: 3000, default: 1800, unit: "m", group: "belly", description: "Altitude window above the flip in which the nose snaps to the N/S catch quadrant." },
   { key: "bellyAimE", kind: "number", min: -800, max: 800, default: 0, unit: "m", group: "belly", description: "Belly-flop plan aim offset east of the catch point." },
@@ -142,7 +142,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "gateLat", kind: "number", min: 1, max: 12, default: 4.5, unit: "m/s²", group: "gate", description: "Design lateral authority used to size the gate." },
   { key: "flipDv", kind: "number", min: 5, max: 70, default: 35, unit: "m/s", group: "gate", description: "Vertical Δv the flip rotation is assumed to spend." },
   { key: "flipFall", kind: "number", min: 2, max: 10, default: 8, unit: "s", group: "gate", description: "Ballistic fall time during the flip per m/s of sink." },
-  { key: "flipComplete", kind: "number", min: 0, max: 3000, default: 1550, unit: "m", group: "gate", description: "Pin height above the rails at which the flip must be complete (0: legacy lateral-stop gate)." },
+  { key: "flipComplete", kind: "number", min: 0, max: 3000, default: 1500, unit: "m", group: "gate", description: "Pin height above the rails at which the flip must be complete (0: legacy lateral-stop gate)." },
   { key: "landingEngines", kind: "integer", min: 1, max: 3, default: 2, unit: "", group: "landing", description: "Sea-level Raptors from the flip to the pins (3 gives more brake/lateral authority; the final gate is faster)." },
   { key: "terminalEngines", kind: "integer", min: 1, max: 3, default: 1, unit: "", group: "landing", description: "Engines of the final approach; staged to when a plan on them is feasible (1: throttleable through the weight)." },
   { key: "finalWn", kind: "number", min: 0.3, max: 1.5, default: 0.8, unit: "rad/s", group: "landing", description: "Single-engine attitude loop natural frequency (one gimbal: ≈ 0.2 rad/s², 20°/s slew)." },

@@ -217,6 +217,15 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   const coupleCap = veh.thrusters[0].thrust * (veh.thrusters[0].pos.x - veh.thrusters[4].pos.x)
   if (basis && cmd.useMhd && qbar > 1200 && mhdAuth > 1.2) tauRes = v3(tauRes.x, 0, 0) // coil has authority: cold gas only for roll
   else if (engOut.thrust > 1e5 && Math.hypot(tauRes.y, tauRes.z) > 2 * coupleCap) tauRes = v3(tauRes.x, 0, 0)
+  // Roll-thruster duty cap. The roll thrusters may be rated above the others (`rcsRollThrust`, for
+  // the single-engine landing, where the gimbal's roll coupling has to be held). Every other phase
+  // was planned for couples at the base rating — the glide's bank planner assumes it — so outside
+  // the one-engine stage the flight software fires them at most to that torque (a duty cap, not a
+  // different thruster): plant and plan stay consistent and the nitrogen use there is unchanged.
+  if (!cmd.rcsRollOnly) {
+    const baseRoll = 2 * veh.design.rcsThrust * veh.shape.p.radius
+    if (Math.abs(tauRes.x) > baseRoll) tauRes = v3(Math.sign(tauRes.x) * baseRoll, tauRes.y, tauRes.z)
+  }
   const rcs = allocateRcs(veh.thrusters, veh.couples, mp.xcg, tauRes, cmd.useRcs && s.cons.n2 > 0)
   const rcsOut = rcsWrench(veh, rcs.duty, mp.xcg, s.cons.n2)
   // geomagnetic torque on the magnet dipole (matters in orbit)

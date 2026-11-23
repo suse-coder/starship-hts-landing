@@ -20,11 +20,13 @@ interface SnapshotHeader {
   readonly cells: number
   readonly predK: number
   readonly ch: number
+  /** the wind the recording was flown in (absent in recordings made before it was recorded) */
+  readonly wind?: { readonly scale: number; readonly turbulence: number; readonly seed: number }
   readonly events: Recording["events"]
   readonly meta: Recording["meta"]
 }
 
-export const loadSnapshot = async (): Promise<Recording | null> => {
+export const loadSnapshot = async (want: { readonly windScale: number; readonly turbulence: number; readonly seed: number }): Promise<Recording | null> => {
   try {
     const base = import.meta.env.BASE_URL || "/"
     const res = await fetch(`${base}recording.bin`, { cache: "force-cache" })
@@ -40,6 +42,12 @@ export const loadSnapshot = async (): Promise<Recording | null> => {
     // committed snapshot is likewise ignored rather than shown as if it were this build.
     if (header.format !== 1 || header.version !== SIM_VERSION) {
       console.info(`precomputed recording is for ${header.version ?? "an unknown version"}, code is ${SIM_VERSION} — re-simulating`)
+      return null
+    }
+    // … and only for the wind it was flown in (a no-wind recording is not a windy mission)
+    const w = header.wind ?? { scale: 0, turbulence: 0, seed: want.seed }
+    if (w.scale !== want.windScale || w.turbulence !== want.turbulence || w.seed !== want.seed) {
+      console.info(`precomputed recording was flown with wind ${w.scale}/${w.turbulence}, this run asks for ${want.windScale}/${want.turbulence} — re-simulating`)
       return null
     }
     if (!(header.n > 0) || !(header.ch > 0)) return null

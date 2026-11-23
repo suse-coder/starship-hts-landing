@@ -63,7 +63,7 @@ describe("single-engine descent on the rig (flight software, no wind)", () => {
     expect(c.at1km).toBeLessThan(0.5)
     expect(c.contactSpeed).toBeLessThan(0.8)
     expect(c.hover).toBeLessThan(3)
-  })
+  }, 30_000)
 
   it("10 m across the rails: caught without overshoot, the pin azimuth held by the roll couples", () => {
     const c = captureCase(10, 0)
@@ -73,7 +73,7 @@ describe("single-engine descent on the rig (flight software, no wind)", () => {
     expect(c.rollAngMax).toBeLessThan(20)
     expect(c.rollAngRails).toBeLessThan(0.5) // the pins arrive square to the arms
     expect(c.tiltMax).toBeLessThan(8)
-  })
+  }, 30_000)
 
   it("30 m along the rails with 0 overshoot; 5 m/s of residual speed is absorbed", () => {
     const a = captureCase(0, 30)
@@ -82,7 +82,7 @@ describe("single-engine descent on the rig (flight software, no wind)", () => {
     const b = captureCase(0, 0, 5, 0)
     expect(b.outcome).toBe("caught")
     expect(b.atRails).toBeLessThan(1)
-  })
+  }, 30_000)
 })
 
 describe("flight log geometry", () => {

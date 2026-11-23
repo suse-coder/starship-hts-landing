@@ -17,6 +17,8 @@ export interface DesignParams {
   readonly picaFlank: number // m, PICA-X thickness at the aft edge of the coverage
   readonly landingProp: number // kg in header tanks at entry
   readonly rcsThrust: number // N per cold-gas thruster
+  /** N per thruster of the four roll thrusters at the aft skirt (defaults to `rcsThrust`) */
+  readonly rcsRollThrust?: number
   readonly n2Mass: number // kg of nitrogen
   readonly windScale: number
   readonly turbulence: number
@@ -234,6 +236,12 @@ export const DEFAULT_DESIGN: DesignParams = {
  */
 export const FLIGHT_DESIGN: DesignParams = {
   ...DEFAULT_DESIGN,
+  // Roll thrusters 8 kN (the other eight stay at 4 kN): 72 kN·m of roll couple. One off-centre
+  // gimballed engine rolls the hull whenever it yaws, and in crosswind it yaws all the way down to
+  // hold the air's moment — measured with the default wind, the 36 kN·m couples sat saturated from
+  // 800 m and the pin axis drifted 12° out of square (3° at the rails). Mass: +40 kg of larger
+  // valves and nozzles (assumed 2.5 g per N of extra thrust).
+  rcsRollThrust: 8000,
   // No flaps (user decision 2026-11-22): the cold-gas RCS flies the ship until it is inside the
   // 200 m radius above the tower, then everything is on the Raptors. The flap model and its wiring
   // stay in the tree (`{ ...DEFAULT_AFT_FLAPS, enabled: true, count: 2 }`) but are not flown.
@@ -489,7 +497,7 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     { id: "mhdPower", label: "Electrode segments, converter, dump resistor", mass: coil.massPower, x: 49.6, body: { kind: "ring", r: 1.9 }, group: "mhd" },
     { id: "battery", label: `Coil charge battery (${(coil.batteryEnergy / 3.6e6).toFixed(0)} kWh)`, mass: coil.massBattery, x: 48.4, body: { kind: "solid", r: 1.0, l: 0.6 }, group: "mhd" },
     { id: "seed", label: "Caesium seed tank + injectors (dry; 400 kg Cs in consumables)", mass: coil.massSeed, x: 50.2, body: { kind: "solid", r: 0.4, l: 0.5 }, group: "mhd" },
-    { id: "rcsDry", label: `Cold-gas RCS: N2 COPVs (${(d.n2Mass / 1000).toFixed(1)} t gas at 300 bar), 12 thrusters`, mass: 400 + 0.6 * d.n2Mass, x: 32.5, body: { kind: "shell", r: 3.8, l: 2 }, group: "rcs" },
+    { id: "rcsDry", label: `Cold-gas RCS: N2 COPVs (${(d.n2Mass / 1000).toFixed(1)} t gas at 300 bar), 12 thrusters`, mass: 400 + 0.6 * d.n2Mass + 4 * 0.0025 * Math.max((d.rcsRollThrust ?? d.rcsThrust) - d.rcsThrust, 0), x: 32.5, body: { kind: "shell", r: 3.8, l: 2 }, group: "rcs" },
   ]
   if (bellFins) {
     components.push({
@@ -523,10 +531,11 @@ export const makeVehicle = (d: DesignParams = DEFAULT_DESIGN): VehicleConfig => 
     thrusters.push({ id: `${tag}-z`, pos: v3(x, 0, -r), dir: v3(0, 0, 1), thrust: T })
   }
   // roll couples at the aft skirt
-  thrusters.push({ id: "roll+a", pos: v3(xA, 0, R_HULL), dir: v3(0, -1, 0), thrust: T })
-  thrusters.push({ id: "roll+b", pos: v3(xA, 0, -R_HULL), dir: v3(0, 1, 0), thrust: T })
-  thrusters.push({ id: "roll-a", pos: v3(xA, 0, R_HULL), dir: v3(0, 1, 0), thrust: T })
-  thrusters.push({ id: "roll-b", pos: v3(xA, 0, -R_HULL), dir: v3(0, -1, 0), thrust: T })
+  const TR = d.rcsRollThrust ?? T
+  thrusters.push({ id: "roll+a", pos: v3(xA, 0, R_HULL), dir: v3(0, -1, 0), thrust: TR })
+  thrusters.push({ id: "roll+b", pos: v3(xA, 0, -R_HULL), dir: v3(0, 1, 0), thrust: TR })
+  thrusters.push({ id: "roll-a", pos: v3(xA, 0, R_HULL), dir: v3(0, 1, 0), thrust: TR })
+  thrusters.push({ id: "roll-b", pos: v3(xA, 0, -R_HULL), dir: v3(0, -1, 0), thrust: TR })
   // pure-torque couples (thruster index pairs fired with equal duty): no net force, no cross-axis torque
   const ix = (id: string): number => thrusters.findIndex((t) => t.id === id)
   const couples: Couple[] = [
