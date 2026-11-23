@@ -9,8 +9,9 @@ The roadmap is checked and updated at the end of every work session (user, 2026-
 **The catch is achieved in still air; M3 is closed for the no-wind case only. M8 is still blocked.**
 
 The full closed-loop mission (`bun scripts/snapshot.ts`, no wind) now ends `caught`: the arms are
-**closed**, both pins carry the load, and the engines are cut at contact (`offset 1.83 m`,
-`0.20 m/s`, 0.5 t of landing propellant left). The earlier `CAUGHT` was a false catch (arms open,
+**closed**, both pins carry the load, and the engines are cut at contact (`offset 0.03 m`,
+5.0 t of landing propellant left; the flip is complete 1205 m up and the pins are 2.5 m from the
+axis at the 1 km gate). The earlier `CAUGHT` was a false catch (arms open,
 12.8 m off) and stays retracted.
 
 **With the default wind the mission still ends `lost`** (delivery ≈ 550–700 m off; the descent runs
@@ -19,7 +20,7 @@ open.
 
 | Area | Current state | Evidence |
 |---|---|---|
-| **M3 — catch** | **CAUGHT in still air; windy open.** | No-wind full mission: `caught`, pins on the closed arms at 0.20 m/s, offset 1.83 m, 0.5 t left; flip complete 363 m above the rails, 382 m off, 35 m/s. Windy: `lost`, delivery 550–700 m off. Tile 1650 K, bondline 695 K (over), steel 285–363 K; `lost`. Latest closed-loop lateral field: **37.5 m** off (36.0 across / 10.6 along), 29.2 m/s, body **73.3°** off E–W, southward arrival, `lost` (MPC worker, 2026-11-21). Integrated mission: 11 m off, climbing 3.0 m/s (`.tmp/mission_verify.log`). Best full-6-DOF optimiser candidate: **6.8 m lateral / 11.7 m/s**, `lost` ([bench/02](../05-benchmarks/02-optimizer.md)). Direction-gate sweeps: best 153.3 m lateral (`.tmp/review/smooth.log`); best across-arms 7.7 m but 230.6 m along (`.tmp/review/gate1500v2.log`). |
+| **M3 — catch** | **CAUGHT in still air; windy open.** | No-wind full mission (2026-11-23): flip-and-stop complete 1205 m above the rails, pins 2.5 m from the axis at the 1 km gate, vertical fall and hoverslam, `caught` with 0.03 m offset (pins touch at ≈ 0.7 m/s, engine cut on contact, arms locked, 4.7 cm of sag on the rails), 5.0 t of landing propellant left, 25–28 s of compute. Tuned point: 5 of 12 neighbouring tunings of the entry aim/gate deliver inside the belly flop's reach — the high-α hand-over is the open robustness item. Roll on the cold-gas couples during the single-engine descent (deviation from Raptors-only). Evidence: `docs/03-spec/flight/nowind/flight.md`, `scripts/verify-model.ts`, `scripts/gate-check.ts`. |
 | **TPS** | **Over the LI-900 limits.** | Latest sweeps: tile **1650 K** vs 1530 K, bondline **695 K** vs 560 K, backing 363 K (pass); `.tmp/review/gate150*.log`, `smooth.log`. Integrated run: tile 1684 K, bondline 701 K (`.tmp/mission_verify.log`). The sourced SpaceX tile claim is 1673 K; the design uses the conservative LI-900 1530 K limit. |
 | **T‑mc** | **Not run.** | No Monte Carlo ensemble exists; a nominal catch would not close T09 anyway. |
 | **Typecheck** | Clean. | `bun run typecheck`, 2026-11-21. |

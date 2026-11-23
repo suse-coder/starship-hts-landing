@@ -5,5 +5,5 @@
   "type": "module",
   "description": "Model verification: isolated landing rig (no wind, no entry) that identifies the 6-DOF plant and checks the landing control against it",
   "exports": { ".": "./src/index.ts" },
-  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*", "@ship/craft": "workspace:*", "@ship/tower": "workspace:*", "@ship/gnc": "workspace:*", "@ship/sim": "workspace:*" }
+  "dependencies": { "@ship/math": "workspace:*", "@ship/earth": "workspace:*", "@ship/craft": "workspace:*", "@ship/aero": "workspace:*", "@ship/tower": "workspace:*", "@ship/gnc": "workspace:*", "@ship/sim": "workspace:*" }
 }

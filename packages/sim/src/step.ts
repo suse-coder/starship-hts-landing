@@ -12,7 +12,8 @@ import {
 } from "@ship/heat"
 import { coilEnergy, coilNI, coilStep, dipoleTorque, mhdBasis, ZERO_MHD, type MhdOut } from "@ship/mhd"
 import { armStep, armTrackCommand, TOWER, towerContact, resolveHullImpact } from "@ship/tower"
-import { allocateGimbals, allocateMhd, allocateRcs, guide, phaseIndex, type Mem, type Nav, type Phase, type RolloutEnd, torqueCommand, U_BASE } from "@ship/gnc"
+import { allocateGimbals, allocateMhd, allocateRcs, guide, phaseIndex, type Mem, type Nav, type Phase, type RolloutEnd, sampleSlam, SLAM, slamSinkLimit, slamTiltCap, slamTube, torqueCommand, U_BASE } from "@ship/gnc"
+import { armGap } from "@ship/tower"
 import { CH, N_CH } from "./recording"
 import type { SimState } from "./state"
 import type { World } from "./world"
@@ -33,6 +34,9 @@ export const dtFor = (s: SimState, alt: number): number => {
     case "pitchUp":
       return 0.04
     case "highAlpha":
+      // prediction rollouts fly the high-α glide at twice the step: they only have to say where
+      // the hand-over ends (its aim is corrected again at every check), at half the cost
+      return s.mem.predicting ? 0.1 : 0.05
     case "bellyFlop":
       return 0.05
     case "flip":
@@ -350,11 +354,14 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
     : s.flapTh
   const tsum = thermalSummary(W.grid, th, veh.coil.x)
   // ---------- magnet, arms, turbulence ----------
+  const phase0 = g.mem.phase
   const coil = coilStep(veh.coil, s.coil, { command: cmd.coil, warmWallT: tsum.coilWallT, mhdPower: mhdOut.power, avionicsLoad: 2500 }, dt)
   // tower-side controller: the arm pair tracks the ship's pin axis across the rails
   const hullBetween = pinAxisPad.z > TOWER.armHeight - 3 && pinAxisPad.z < TOWER.armHeight + veh.pinX
     && pinAxisPad.y > TOWER.pos.y - 2 - TOWER.armLength && pinAxisPad.y < TOWER.pos.y - 2
-  const arms = armStep(s.arms, cmd.armsClose, dt, armTrackCommand(pinAxisPad, velPad), hullBetween ? { x: pinAxisPad.x, r: veh.shape.p.radius } : undefined)
+  // the arm drives lock once both pins bear on the closed rails (and stay locked after the catch)
+  const armsHold = phase0 === "caught" || (pinCount >= 2 && pinLoadMin > 0.02 * mp.m * G0 && s.arms.open < 0.12)
+  const arms = armStep(s.arms, cmd.armsClose, dt, armTrackCommand(pinAxisPad, velPad), hullBetween ? { x: pinAxisPad.x, r: veh.shape.p.radius } : undefined, armsHold)
   // ---------- bookkeeping ----------
   const fNonGrav = norm(add(qrot(s.q, Fb), ZERO)) / mp.m
   const gload = fNonGrav / G0
@@ -417,6 +424,58 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   set("pinLoad", pinLoad); set("pinLoadMin", pinLoadMin); set("pinCount", pinCount)
   set("bodyContact", bodyContact ? 1 : 0); set("hullBump", hullBump ? 1 : 0)
   set("windE", windEnu.x); set("windN", windEnu.y)
+  // ---------- guidance plan vs flown, per degree of freedom (diagnostics; no feedback into the flight) ----------
+  if (!W.lite) {
+    const wI = qrot(s.q, s.w)
+    const vPin = add(velPad, toPad(cross(wI, axisB(veh.pinX))))
+    set("pinVx", vPin.x); set("pinVy", vPin.y)
+    // thrust direction actually flown (engine force in the pad frame); the body axis when the engines are cold
+    const fPad = toPad(qrot(s.q, engOut.thrust > 1e4 ? engOut.F : v3(1, 0, 0)))
+    set("tiltE", Math.atan2(fPad.x, Math.max(fPad.z, 1e-6 * norm(fPad)))); set("tiltN", Math.atan2(fPad.y, Math.max(fPad.z, 1e-6 * norm(fPad))))
+    // pin-axis azimuth error from east–west (mod 180°): 0 = pins over the rails
+    const yPad = toPad(qrot(s.q, v3(0, 1, 0)))
+    const azP = Math.atan2(yPad.y, yPad.x)
+    set("rollAng", ((azP + Math.PI / 2) % Math.PI + Math.PI) % Math.PI - Math.PI / 2)
+    set("accT", engOut.thrust / mp.m)
+    const uc = g.mem.uCmd
+    const powered = phase === "flip" || phase === "landing" || phase === "terminal"
+    if (powered) { set("accCmd", Math.hypot(uc[0], uc[1], uc[2])); set("cmdTiltE", Math.atan2(uc[0], Math.max(uc[2], 1e-3))); set("cmdTiltN", Math.atan2(uc[1], Math.max(uc[2], 1e-3))) }
+    eng.slice(0, 3).forEach((e, i) => { row[CH.thr1 + i] = e.on && e.spool > 0 ? e.throttle : 0 })
+    const slam = g.mem.land?.slam ?? null
+    if (powered && slam && s.t >= slam.t0) {
+      // single-engine descent: the plan made at its start, sampled at this time
+      const pl = sampleSlam(slam, s.t)
+      const tgo = Math.max(slam.t0 + slam.tf - s.t, 0)
+      set("planOn", 1); set("planX", pl.x); set("planY", pl.y); set("planZ", pl.z)
+      set("planVx", pl.vx); set("planVy", pl.vy); set("planVz", pl.vz); set("planAcc", pl.a); set("planTiltE", pl.tiltE); set("planTiltN", pl.tiltN)
+      // constraint band: what the pin loop can still null before the rails (snap bound of the
+      // gimbal and the capped lateral acceleration), and the hard limits — the fastest sink full
+      // thrust can still stop, and the corridor between the arms once the hull is among them
+      const aT = Math.max(engOut.thrust / mp.m, 1)
+      const kept = veh.engines[0]
+      const L = Math.max(mp.xcg - kept.gimbal.x, 1)
+      const snap = aT * ((engOut.thrust * L) / mp.I.y) * (kept.gimbalMax - Math.atan(Math.hypot(kept.gimbal.y, kept.gimbal.z) / L))
+      set("tubeLat", slamTube(tgo, snap, Math.min(SLAM.aSat, aT * Math.tan(slamTiltCap(pinRel.z)))))
+      const eng0 = veh.engines[0]
+      set("vzLimit", slamSinkLimit(pinRel.z, (eng0.thrustSL + 101325 * eng0.exitArea - atm.p * eng0.exitArea) / mp.m, 0.7))
+    } else if ((phase === "bellyFlop" || phase === "flip") && g.mem.predPath.length > 2) {
+      // belly flop and flip: the plan is a path over height (pad ENU, U includes the arm height);
+      // sampled at the height flown
+      const pp = g.mem.predPath, zNow = pinRel.z + TOWER.armHeight
+      let k = 0
+      while (k + 2 < pp.length && pp[k + 1].z > zNow) k++
+      const a = pp[k], b = pp[k + 1]
+      const f = Math.abs(a.z - b.z) > 1e-6 ? clamp((a.z - zNow) / (a.z - b.z), 0, 1) : 0
+      set("planOn", 1); set("planX", a.x + (b.x - a.x) * f); set("planY", a.y + (b.y - a.y) * f); set("planZ", pinRel.z)
+      // what the flight can still absorb from here: the descent law's measured capture radius at
+      // flip completion (≈ 100 m) plus what the belly flop can still steer out before the flip
+      // (≈ 1 m/s² of usable lateral acceleration at its 1.8°/s heading rate — an estimate)
+      const tFlip = Math.max((pinRel.z - 1200) / Math.max(-velPad.z, 30), 0)
+      set("tubeLat", 100 + (phase === "bellyFlop" ? 0.5 * 1.0 * tFlip * tFlip : 0))
+    }
+    // tower corridor (hard): the hull is level with the arms from pinX above the rails down
+    if (pinRel.z < veh.pinX + 2 && pinRel.z > -3 && Math.hypot(pinRel.x, pinRel.y) < 60) set("tubeHard", Math.max(armGap(arms) / 2 - veh.shape.p.radius, 0))
+  }
   set("predDR", g.mem.pred ? g.mem.pred.downrangeErr : 0); set("predCR", g.mem.pred ? g.mem.pred.crossrangeErr : 0); set("npcMhd", g.mem.mhdScale); set("bellyHdg", g.mem.heading ?? 0); set("bellyMiss", g.mem.bellyMiss)
   void clamp
   void enuToEcef
@@ -446,8 +505,11 @@ export const rolloutFrom = (W: World, s0: SimState, mem: Mem, until: Phase): Rol
   const Wp = predWorld(W)
   let s: SimState = { ...s0, mem: { ...mem, predicting: true }, events: [] }
   let row: Float64Array | null = null
+  const prof = (globalThis as { ROLLPROF?: Record<string, number> }).ROLLPROF
   for (let i = 0; i < 40000 && !s.done && s.mem.phase !== until; i++) {
+    const ph = s.mem.phase, ta = prof ? performance.now() : 0
     const o = step(Wp, s)
+    if (prof) prof[ph] = (prof[ph] ?? 0) + performance.now() - ta
     s = o.s; row = o.row
   }
   const dtMs = performance.now() - t0
@@ -455,5 +517,10 @@ export const rolloutFrom = (W: World, s0: SimState, mem: Mem, until: Phase): Rol
   if (!row) return null
   // the row describes the state before the last step; one more evaluation gives the end state
   const end = step(Wp, s).row
-  return { phase: s.mem.phase, t: s.t, pinRel: v3(end[CH.pinX], end[CH.pinY], end[CH.pinZ]), velRel: v3(end[CH.ve], end[CH.vn], end[CH.vu]) }
+  // nose azimuth in the pad frame (for the flip's carry, which is along the nose)
+  const th = Wp.plan.theta0 + OMEGA_EARTH * s.t
+  const xb = qrot(s.q, v3(1, 0, 0))
+  const eE = rotZ(Wp.padEnu.e, th), eN = rotZ(Wp.padEnu.n, th)
+  const ne = dot(xb, eE), nn = dot(xb, eN), nh = Math.hypot(ne, nn) || 1
+  return { phase: s.mem.phase, t: s.t, pinRel: v3(end[CH.pinX], end[CH.pinY], end[CH.pinZ]), velRel: v3(end[CH.ve], end[CH.vn], end[CH.vu]), nose: { e: ne / nh, n: nn / nh } }
 }

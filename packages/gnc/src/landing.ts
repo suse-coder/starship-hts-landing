@@ -732,7 +732,7 @@ export const LANDING_LAT_DESIGN = 4.5
 /** vertical Δv the ≈ 5 s flip burn costs while the thrust sweeps from horizontal to vertical (m/s) */
 export const FLIP_DV = 35
 /** seconds of ballistic fall during the flip (m per m/s of sink) */
-export const FLIP_FALL = 5.9
+export const FLIP_FALL = 8
 
 /** The parameters of the flip gate. Mission tuning supplies its own instance; the defaults are the
  *  flown values. The field names match `MissionTuning`, so a tuning value is a valid gate. */
@@ -742,6 +742,8 @@ export interface FlipGate {
   readonly gateLat: number
   readonly flipDv: number
   readonly flipFall: number
+  /** pin height above the rails at which the flip must be COMPLETE (m); 0 = the legacy lateral-stop gate */
+  readonly flipComplete: number
 }
 
 export const DEFAULT_FLIP_GATE: FlipGate = {
@@ -750,10 +752,14 @@ export const DEFAULT_FLIP_GATE: FlipGate = {
   gateLat: LANDING_LAT_DESIGN,
   flipDv: FLIP_DV,
   flipFall: FLIP_FALL,
+  flipComplete: 1550,
 }
 
 export const flipAltitude = (vz: number, gate: FlipGate = DEFAULT_FLIP_GATE): number => {
   const s = Math.abs(vz)
+  // completion-height gate: the flip (a fixed manoeuvre, `flipFall` seconds of fall per m/s of
+  // sink — measured 7.1 at 108 m/s on two engines) must be finished `flipComplete` above the rails
+  if (gate.flipComplete > 0) return gate.flipComplete + gate.flipFall * s
   const tDiv = (Math.sqrt(2 * gate.gateClosing ** 2 + 4 * gate.gateLat * gate.gateMiss) - gate.gateClosing) / gate.gateLat
   return 0.5 * (Math.max(s - gate.flipDv, 5) + 0.7) * tDiv + gate.flipFall * s
 }

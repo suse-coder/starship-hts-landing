@@ -13,6 +13,7 @@ import { TOWER } from "@ship/tower"
 import { SIM_VERSION } from "virtual:sim-version"
 import { clearCached, fnv1a, loadCached, storeCached } from "./simCache"
 import { loadSnapshot } from "./snapshot"
+import { createDiagrams } from "./diagrams/view"
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const ICON = {
@@ -218,6 +219,24 @@ $("b-start").onclick = () => seek(0)
 $("b-end").onclick = () => { setPlaying(false); seek(duration) }
 $("b-prev").onclick = () => { const ts = phaseTimes().filter((x) => x < t - 0.5); seek(ts.length ? ts[ts.length - 1] : 0) }
 $("b-next").onclick = () => { const n = phaseTimes().find((x) => x > t + 0.5); seek(n ?? duration) }
+// ---- workspace tabs (timeline footer): the 3D scene | the MPC diagrams ----
+// The diagram workspace (diagrams/view.ts) covers the stage while its tab is open. It shares the
+// playhead `t` (fed from the frame loop) and a click in a diagram seeks through the same `seek` the
+// timeline scrubber uses.
+const diagrams = createDiagrams($("diagrams"), { seek: (tt) => seek(tt), phaseLabel: (id) => PHASE_LABEL[id] ?? id })
+let diagramsOn = false
+const setTab = (tab: "scene" | "diagrams"): void => {
+  diagramsOn = tab === "diagrams"
+  $("tab-scene").classList.toggle("active", !diagramsOn)
+  $("tab-scene").setAttribute("aria-selected", String(!diagramsOn))
+  $("tab-diagrams").classList.toggle("active", diagramsOn)
+  $("tab-diagrams").setAttribute("aria-selected", String(diagramsOn))
+  diagrams.setActive(diagramsOn)
+}
+for (const [id, tab] of [["tab-scene", "scene"], ["tab-diagrams", "diagrams"]] as const) {
+  $(id).onclick = () => setTab(tab)
+  $(id).onkeydown = (e) => { if (e.key === "Enter") setTab(tab) }
+}
 // drag anywhere on the timeline track to scrub
 const track = $("track")
 const scrubTo = (clientX: number): void => { const r = track.getBoundingClientRect(); seek(((clientX - r.left) / r.width) * duration) }
@@ -764,6 +783,7 @@ const start = (r: Recording): void => {
   t = 0
   view.setRecording(r)
   view.resize()
+  diagrams.setRecording(r) // MPC diagrams tab: new series, time window back to the descent
   document.body.classList.remove("locked")
   buildTree()
   buildTelemetry()
@@ -833,7 +853,10 @@ const loop = (now: number): void => {
     $("played").style.width = `${(t / duration) * 100}%`
     $("playhead").style.left = `${(t / duration) * 100}%`
     $("tlabel").textContent = fmtT(t)
-    view.render(t)
+    // MPC diagrams tab open: the 3D scene is covered, so only the diagrams' playhead moves. The scene
+    // is still stepped while the exploded view springs back (its progress resumes the playback).
+    if (diagramsOn) diagrams.setTime(t)
+    if (!diagramsOn || resumeAfterAssemble) view.render(t)
     if (now - lastUi > 90) {
       lastUi = now
       updateTelemetry()

@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js"
-import { TOWER } from "@ship/tower"
+import { TOWER, armsInit, armInnerAt, armDepthAt } from "@ship/tower"
 
 /**
  * Starbase Pad 2 ("Pad B") — procedural model of the integration tower ("Mechazilla"), its carriage and
@@ -11,21 +11,39 @@ import { TOWER } from "@ship/tower"
  * centre of the launch mount at ground level (the same frame as the contact model in @ship/tower).
  *
  * Sources (tags used in the doc comments below):
- * - [T] `TOWER` in @ship/tower — the geometry the contact model uses (rails, arms, gap, mount height).
- *   Rails and arms are drawn exactly where the physics has them.
+ * - [T] `TOWER`, `armInnerAt`, `armDepthAt` and the `towerBoxes` envelopes in @ship/tower — the
+ *   geometry the contact model uses. The picture is built from those numbers: rail top, inner faces,
+ *   arm length, wedge depth and tip station are read from the module, never restated (the private
+ *   bounds of a `towerBoxes` envelope are quoted where a part has to stay inside one).
+ * - [R] the annotated reference render of the structure (Owe BL): square four-legged lattice mast in
+ *   light steel with girts and diagonal bracing in short repeating modules, two red-striped carriage
+ *   tracks on the corner columns of the arm face, a dark portal-frame carriage, two dark tapered
+ *   truss chopsticks with a ladder-like top, a dark articulated QD arm with an elbow and an end plate,
+ *   a lattice crown.
  * - [W] Wikipedia, "SpaceX Starbase" (accessed 2026-11-21): 146 m tower (FAA determination of no
- *   hazard, 2021), stacked from nine large steel sections, dark-grey steel truss, lightning rod and a
- *   small weather station on top; the arms sit on a carriage moved by a cable over a pulley at the top
- *   from a winch at the base, with bearings at the sides of the carriage; a linear hydraulic actuator
- *   moves the arms horizontally; tracks on top of the arms; Pad 2 arms are shorter; the Pad 2 mount
+ *   hazard, 2021), lightning rod and a small weather station on top; the arms sit on a carriage moved
+ *   by a cable over a pulley at the top from a winch at the base, with bearings at the sides of the
+ *   carriage; a linear hydraulic actuator moves the arms; tracks on top of the arms; the Pad 2 mount
  *   has a water-cooled steel plate on its top level and a steel-pipe flame diverter ("flame bucket");
- *   20 hold-down clamps and a booster quick disconnect; the tank farm stores CH₄, LOX, water, N₂,
- *   He and hydraulic fluid, with subcoolers.
- * - [E] estimated from public photos / video (proportions against the 9 m vehicles).
+ *   20 hold-down clamps and a booster quick disconnect; the tank farm stores CH₄, LOX, water, N₂, He
+ *   and hydraulic fluid, with subcoolers.
+ * - [E] estimated (proportions against the 9 m vehicles and the reference render).
  *
- * Performance: repeated members are InstancedMeshes grouped by (profile, material); ≈ 1.1·10⁵
- * triangles in total. Weathering is a world-scale triplanar grime texture patched into
- * MeshStandardMaterial (no UV stretching on scaled instances).
+ * Kinematics: the real chopsticks swing about vertical hinges on the carriage; the contact model
+ * translates the pair across x (gap `closedGap…openGap`, centre `cx`). The picture keeps the model's
+ * kinematics — each arm rides a trolley on a traverse girder of the carriage — and draws the hinge
+ * boss at each arm root so it still reads as a hinged chopstick.
+ *
+ * Scene graph: `root` ("pad2") → "site" (mount, trench, tank farm, roads), "mechazilla" (mast, crown,
+ * carriage, traverse girder, QD arm, actuator rods, beacons), "chopstick-west", "chopstick-east".
+ *
+ * Performance: every straight member is an instance of one of five unit profiles, grouped by
+ * (profile, material) into InstancedMeshes; the tower and the site use separate pools so the tower
+ * can be culled and counted on its own. Measured (packages/view/test/tower.test.ts keeps the budget):
+ * the tower — "mechazilla" + both chopsticks — is 1150 instances in 23 draw calls, ≈ 2.15·10⁴
+ * triangles; the whole pad is 64 draw calls, ≈ 6.1·10⁴ triangles. Weathering is a world-scale
+ * triplanar grime texture patched into MeshStandardMaterial (no UV stretching on scaled instances).
+ * `setArms` only writes two group positions and two rod transforms (no allocation).
  */
 export const enu = (e: number, n: number, u: number): THREE.Vector3 => new THREE.Vector3(e, u, -n)
 
@@ -36,74 +54,105 @@ export interface PadModel {
 
 // ===================================================================================== dimensions
 
-/** Lattice tower. */
+/** Lattice mast. */
 const TW = {
-  /** tower centre (m) [T] */
+  /** tower centre (m) [T: TOWER.pos] */
   e: TOWER.pos.x,
   n: TOWER.pos.y,
-  /** half side of the square lattice, outer faces (m) [E: ≈ 12 m square, ≈ 1.3 × the 9 m booster] */
+  /** half side of the square mast, outer column faces (m) [T: "tower-lattice" box is ±6.1 m] */
   half: 6,
-  /** corner column, built-up box section (m) [E] */
+  /** corner column, square box section (m) [T: box comment "corner columns at ±5.25 m (1.5 m boxes)"] */
   col: 1.5,
-  /** stacked sections [W] */
-  sections: 9,
-  /** top of the pile caps = column base (m) [E] */
+  /** bracing modules (girt to girt) [R: repeating modules of ≈ 8–10 m; E: 15 × 8.85 m] */
+  modules: 15,
+  /** top of the pile caps = column base (m) [T: "tower-pile-caps" box is 1.2 m tall] */
   base: 1.2,
-  /** top of the lattice (m) [E]; crown + lightning mast reach TOWER.height = 146 m [T, W] */
+  /** top of the lattice (m) [T: "tower-crown" box starts at 133.5 m]; crown + lightning rod reach TOWER.height */
   top: 134,
 } as const
-/** column centre-line offset from the tower centre */
+/** column centre-line offset from the tower centre (5.25 m) */
 const CL = TW.half - TW.col / 2
-/** section height ≈ 14.8 m (9 sections) */
-const HS = (TW.top - TW.base) / TW.sections
+/** module height ≈ 8.85 m */
+const HM = (TW.top - TW.base) / TW.modules
+/** floodlight levels on the arm face (m) [T: "tower-floodlights-low/mid/high" boxes, 37.9–39.2, 82.2–83.5, 97.6–98.9] */
+const FLOOD_U = [38.1, 82.4, TOWER.armHeight - 14] as const
+/** crown [T: "tower-crown" box, 133.5–139.5 m, e ±6.4, n −9.3…+7.7 about the tower centre; R: lattice crown; E: layout] */
+const CROWN = { apex: 139, foot: 4.2, head: 1.1, jibE: 3.8, sheaveE: 3, sheaveU: TW.top + 2.6, sheaveR: 0.8 } as const
+/**
+ * Hoist cable drops (n): 0.15 m outside the south and north column faces, i.e. on the faces of the
+ * "tower-lattice" box [T], so no cable hangs in the catch corridor.
+ */
+const DROP_S = TW.n - TW.half - 0.15
+const DROP_N = TW.n + TW.half + 0.15
 
-/** Carriage (rides on corner rails, cable-hoisted [W]). */
+/** Carriage (portal frame around the mast, rides the two tracks, cable-hoisted [W]). */
 const CA = {
-  /** frame bottom / top (m) [E: ≈ 15 m tall frame around the arm roots] */
+  /** frame bottom / top (m) [E: 15 m deep frame; T: "carriage" box is armHeight −9.1…+9.6] */
   z0: TOWER.armHeight - 9,
   z1: TOWER.armHeight + 6,
-  /** centre-line half width of the frame ring (m) [E: 1.6 m clearance for the bearings] */
+  /** centre-line half width of the frame (m) [E: 1.6 m clearance for the bogies; T: box ±8.2 m] */
   r: TW.half + 1.6,
   girder: 1.1,
-  /** half length of the arm traverse beams (m) [E: covers the open arms, gap 26 m [T] + trolley] */
+  /** half length of the traverse girder (m) [T: "traverse-beams" box ±16.6 m] */
   beamHalf: 16.6,
 } as const
-/** south face of the carriage ring (n ≈ 14.85 m) */
+/** south face of the carriage frame (n = 14.85 m) */
 const RING_S = TW.n - CA.r - CA.girder / 2
-/** traverse beams centre line (1.2 m deep in n) */
+/** traverse girder chords, centre line (1.2 m deep in n: 13.65…14.85) [T: "traverse-beams" box n 13.6…14.9] */
 const BEAM_N = RING_S - 0.6
-/** upper / lower traverse beam centres (m) */
+/** upper / lower traverse chord centres, 1.3 m deep (m) [T: box armHeight −5.8…+1.9] */
 const BEAM_U = [TOWER.armHeight + 1.25, TOWER.armHeight - 5.1] as const
-/** trolley front face = start of the arm truss (n ≈ 12.25 m); the rail itself starts at pos.y − 2 [T] inside the carriage */
-const ROOT_N = RING_S - 2.6
-/** arm tip = contact model yMin = pos.y − 2 − armLength = −17 m [T] */
-const TIP_N = TOWER.pos.y - 2 - TOWER.armLength
-/** actuator axis (n) */
-const ACT_N = ROOT_N + 0.7
+/** web (posts and diagonals) of the traverse girder, behind the trolley lugs */
+const WEB_N = BEAM_N + 0.43
 /**
- * Chopstick truss beyond [T]: the real wedge — 4.6 m deep at the carriage, ~1 m at the tip, with the
- * track horizontal on top and the underside rising. The cross-section is a **V**: two top chords
- * under the rail and one lower spine, with V webs and Warren diagonals in the two inclined planes.
- * The old visual was a four-chord rectangular box; it read as a box girder rather than Mechazilla.
+ * Arm actuators [W: linear hydraulic actuator], between the two traverse chords: crossed cylinders
+ * (the east arm's above the west arm's), barrel fixed to the girder, rod to the trolley lug `lug`
+ * metres outboard of the arm's inner edge. Closed length (8.4 m) ≥ barrel (8.2 m); the stroke covers
+ * the 8.4 m travel per arm [T: (openGap − closedGap)/2].
+ */
+const ACT = { anchor: 3, barrel: 8.2, uE: TOWER.armHeight - 0.6, uW: TOWER.armHeight - 3.2, n: BEAM_N - 0.25, lug: 0.8 } as const
+
+/** trolley front face (n = 12.25 m) [T: "arm-*-trolley" boxes start at n = 12.25] */
+const ROOT_N = RING_S - 2.6
+/** arm tip = contact model yMin = pos.y − 2 − armLength [T] */
+const TIP_N = TOWER.pos.y - 2 - TOWER.armLength
+/**
+ * Chopstick truss [T for every contact dimension; R/E for the member layout]:
+ * - rail top = TOWER.armHeight, rail inner edge = `armInnerAt(·, 0)` (group x = 0), width TOWER.armWidth;
+ * - underside at `armDepthAt(n)` below the rail (wedge, armRootDepth → armTipDepth);
+ * - below the rail the inner face is the plane `armInnerAt(·, dz)`: it leans outward with depth
+ *   (TOWER.armFlare over TOWER.armRootDepth), so the lower chord sits outboard of the rail. That
+ *   lean leaves no room for a fourth chord inside the arm width, hence a three-chord taper truss
+ *   (two top chords under the rail and walkway, one lower chord), which is also what [R] shows.
  */
 const ARM = {
-  /** the real chopsticks are a wedge: 4.6 m deep at the carriage, ~1 m at the tip, top horizontal */
-  rootDepth: TOWER.armRootDepth,
-  haunchN: 6,
-  tipN: -7,
-  tipDepth: TOWER.armTipDepth,
-  /** top chord centres inside the 1.6 m rail width; the inner face itself is the bumper line at o = 0 */
-  topIn: 0.24,
-  topOut: TOWER.armWidth - 0.3,
-  tipOut: TOWER.armWidth - 0.62,
-  panels: 13,
+  /** landing rail: thickness and width (m) [E]; its top and inner edge are [T] */
+  rail: 0.3, railW: 0.9,
+  /** hazard-painted fascia on the rail's inner edge (m) [E] */
+  edge: 0.05,
+  /** round members Ø (m) [E] */
+  chord: 0.4, spine: 0.44, post: 0.26, diag: 0.2, rung: 0.2,
+  /** rub plate on the inner face below the rail: thickness, depth range below the rail top (m) [E] */
+  pad: 0.1, padTop: 0.4, padBot: 1.24,
+  /** truss panels between the root frame and the tip [E: ≈ 2.5 m pitch] */
+  panels: 10,
+  /** the top narrows over the last 6 m to this outer chord offset (m) [R: narrow tip; E] */
+  taper: 6, tipOut: 1.0,
+  /** hinge boss: axis offset from the inner edge, distance in front of the trolley (m) [E] */
+  hingeO: 1.1, hingeN: 0.8,
 } as const
-/**
- * Arm actuators [W: linear hydraulic actuator]: crossed cylinders (the east arm's above the upper beam,
- * the west arm's below the lower beam) so that the closed length (8.4 m) ≥ the barrel (8.2 m) and
- * the stroke covers the 8.4 m travel per arm [T: (openGap − closedGap)/2].
- */
-const ACT = { anchor: 3, barrel: 8.2, uE: TOWER.armHeight + 3, uW: TOWER.armHeight - 7.1 } as const
+/** root frame of the truss (1.6 m in front of the trolley: the hinge bay) and its last frame before the tip shoe */
+const TRUSS_N = ROOT_N - 1.6
+const TRUSS_END = TIP_N + 0.9
+/** station where the top starts to narrow */
+const TAPER_N = TIP_N + ARM.taper
+/** outward lean of an arm's inner face at `dz` below the rail top (m) [T: armInnerAt] */
+const innerLean = (dz: number): number => armInnerAt(armsInit, 1, dz) - armInnerAt(armsInit, 1, 0)
+/** lean per metre of depth and the secant of the lean angle */
+const LEAN_K = innerLean(1)
+const LEAN_SEC = Math.hypot(1, LEAN_K)
+/** outward offset of the axis of a round member (radius r) whose surface stays `gap` behind the inner face at depth dz */
+const behind = (dz: number, r: number, gap = 0.01): number => innerLean(dz) + (r + gap) * LEAN_SEC
 
 /**
  * Pad 2 launch-mount pedestal and flame trench [W: flame bucket; E: layout]. The ground at Boca Chica
@@ -126,8 +175,26 @@ const OLM = {
   hole: 4.6,
   plateR: 11.6, clampR: 5.4, clamps: 20,
 } as const
-/** Ship quick-disconnect arm, stowed along the south face pointing west [E: QD level ≈ mount 20 m + booster ≈ 72 m] */
-const SQD = { e: TW.e - 7, n: TW.n - 7.4, u: 95, len: 20, w: 2.4, h: 3 } as const
+/**
+ * Ship quick-disconnect arm [R: dark lattice arm with an elbow and an end plate, below the chopsticks;
+ * E: sizes], parked swung away from the catch corridor: hinged on the SW column, pointing west along
+ * the south face. Every part stays inside the contact model's envelope
+ * [T: "ship-qd-arm" box, e −29.8…−5, n 14…17.2, u 93.2…98.3].
+ */
+const QD = {
+  /** hinge axis and arm centre line (m) */
+  hingeE: TW.e - 7, n: TW.n - 7.4,
+  /** upper arm: axis height, east/west ends, half width (n) and half height, panels */
+  u: 97, e0: TW.e - 7.7, e1: TW.e - 18, hw: 1.05, hh: 1, panels: 4,
+  /** elbow pin (axis along n) */
+  elbowE: TW.e - 18.5,
+  /** forearm: ends, axis drop over its length, half width / height, panels */
+  f0: TW.e - 19, f1: TW.e - 26.6, drop: 1.2, fhw: 0.95, fhh: 0.85, fpanels: 3,
+  /** hose bundle under the north lower chord: lane (n), top hose height, spacing, Ø */
+  hoseN: TW.n - 6.35, hoseU: 95.45, hoseStep: 0.36, hose: 0.3,
+} as const
+/** QD propellant risers inside the west side of the mast (e) [E] */
+const RISER_E = TW.e - CL + 0.75
 /** Drawworks (hoist winch) house north of the tower [W: winch at the base; E: size] */
 const DW = { e: TW.e, n0: TW.n + 10, n1: TW.n + 19, w: 14, h: 7.4 } as const
 /** Pipe rack from the tank farm to the tower base [E] */
@@ -145,9 +212,9 @@ const SITE = { apron: [-60, 60, -95, 60], road: [-105, 105, -124, 89], fence: [-
 // ===================================================================================== members
 
 type V = THREE.Vector3
-type Prof = "box" | "ibeam" | "tube" | "ball"
+type Prof = "box" | "ibeam" | "tube" | "pipe" | "ball"
 type MatKey =
-  | "tower" | "towerDark" | "arm" | "rail" | "chrome" | "yellow" | "safety" | "concrete" | "apron" | "gravel"
+  | "mast" | "black" | "stripe" | "tower" | "towerDark" | "arm" | "rail" | "chrome" | "yellow" | "safety" | "concrete" | "apron" | "gravel"
   | "soot" | "heat" | "grate" | "tank" | "insul" | "stainless" | "asphalt" | "siding" | "roof" | "lamp"
   | "red" | "cable" | "white" | "blue" | "fins" | "fabric" | "decal"
 type Mats = Readonly<Record<MatKey, THREE.MeshStandardMaterial>>
@@ -174,6 +241,8 @@ const CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const // SW, SE, NE, NW 
 const bar = (mat: MatKey, a: V, b: V, w: number, d = w, ref?: V, tint?: number): Member => ({ prof: "box", mat, a, b, w, d, ref, tint })
 const ibeam = (mat: MatKey, a: V, b: V, w: number, d: number, tint?: number): Member => ({ prof: "ibeam", mat, a, b, w, d, tint })
 const tube = (mat: MatKey, a: V, b: V, dia: number, tint?: number): Member => ({ prof: "tube", mat, a, b, w: dia, d: dia, tint })
+/** round truss member (8-sided) */
+const pipe = (mat: MatKey, a: V, b: V, dia: number): Member => ({ prof: "pipe", mat, a, b, w: dia, d: dia })
 const ball = (mat: MatKey, p: V, dia: number): Member => ({ prof: "ball", mat, a: p.clone().addScaledVector(UP, -dia / 2), b: p.clone().addScaledVector(UP, dia / 2), w: dia, d: dia })
 /** axis-aligned block from ENU bounds */
 const block = (mat: MatKey, e0: number, e1: number, n0: number, n1: number, u0: number, u1: number, tint?: number): Member => {
@@ -188,6 +257,18 @@ const pipeRun = (mat: MatKey, pts: readonly V[], dia: number): Member[] => {
   const out: Member[] = []
   for (let i = 1; i < pts.length; i++) out.push(tube(mat, pts[i - 1], pts[i], dia))
   for (let i = 1; i < pts.length - 1; i++) out.push(ball(mat, pts[i], dia))
+  return out
+}
+
+/** polyline hose without elbow fittings: every run is extended by half a diameter so the corners close */
+const hoseRun = (mat: MatKey, pts: readonly V[], dia: number): Member[] => {
+  const out: Member[] = []
+  for (let i = 1; i < pts.length; i++) {
+    const dir = pts[i].clone().sub(pts[i - 1]).normalize()
+    const a = i > 1 ? pts[i - 1].clone().addScaledVector(dir, -dia / 2) : pts[i - 1]
+    const b = i < pts.length - 1 ? pts[i].clone().addScaledVector(dir, dia / 2) : pts[i]
+    out.push(pipe(mat, a, b, dia))
+  }
   return out
 }
 
@@ -206,7 +287,7 @@ const memberMatrix = (m: Member, out: THREE.Matrix4): THREE.Matrix4 => {
   return out.setPosition(_c.addVectors(m.a, m.b).multiplyScalar(0.5))
 }
 
-/** unit profiles: box, I-beam (flanges ⟂ local z), tube, ball */
+/** unit profiles: box, I-beam (flanges ⟂ local z), tube (14-sided), pipe (8-sided truss member), ball */
 const makeProfiles = (): Readonly<Record<Prof, THREE.BufferGeometry>> => ({
   box: new THREE.BoxGeometry(1, 1, 1),
   ibeam: mergeGeometries([
@@ -215,6 +296,7 @@ const makeProfiles = (): Readonly<Record<Prof, THREE.BufferGeometry>> => ({
     new THREE.BoxGeometry(0.16, 1, 0.74),
   ]),
   tube: new THREE.CylinderGeometry(0.5, 0.5, 1, 14, 1),
+  pipe: new THREE.CylinderGeometry(0.5, 0.5, 1, 8, 1),
   ball: new THREE.SphereGeometry(0.5, 12, 8),
 })
 
@@ -455,7 +537,12 @@ const weather = (m: THREE.MeshStandardMaterial, tex: THREE.Texture, metres: numb
   return m
 }
 
-/** PBR palette: dark-grey tower steel [W], primer-white arms, rails, concrete, tanks, pipes */
+/**
+ * PBR palette. Mechazilla [R]: light-grey painted steel for the mast and crown ("mast"), near-black
+ * steel for the carriage, chopsticks and QD arm ("black"), red paint for the track stripes ("stripe"),
+ * bare machined steel for rails, pins and sheaves ("rail"). The mount and site keep their mid-grey
+ * structural steel ("tower"/"towerDark"), concrete, tanks and pipes.
+ */
 const makeMaterials = (rand: () => number): Mats => {
   const rust = grimeTexture(rand, true)
   const water = grimeTexture(rand, false)
@@ -467,6 +554,9 @@ const makeMaterials = (rand: () => number): Mats => {
   const joints = jointTexture(rand)
   joints.repeat.set(10, 12.9)
   return {
+    mast: weather(std({ color: 0xc6cacd, metalness: 0.3, roughness: 0.55 }), rust, 7, 0.45),
+    black: weather(std({ color: 0x24272b, metalness: 0.65, roughness: 0.5 }), rust, 6, 0.35),
+    stripe: weather(std({ color: 0xc21f1f, metalness: 0.15, roughness: 0.5 }), water, 5, 0.25),
     tower: weather(std({ color: 0x6f7479, metalness: 0.55, roughness: 0.6 }), rust, 7, 0.6),
     towerDark: weather(std({ color: 0x4d5258, metalness: 0.6, roughness: 0.55 }), rust, 7, 0.5),
     arm: weather(std({ color: 0xd2d5d7, metalness: 0.25, roughness: 0.5 }), rust, 6, 0.35),
@@ -557,121 +647,150 @@ const shadowed = <T extends THREE.Mesh>(m: T, cast = true): T => {
 // ===================================================================================== tower
 
 /**
- * Lattice: per section four corner columns (Ø-box 1.5 m), I-beam girders at the splice (1.0 m deep)
- * and mid-height (0.75 m), X-bracing (0.42 m square tubes) in both half panels of every face with
- * gusset plates at the crossings, plan "diamond" bracing at the splices, splice collars [E]. Each
- * section gets its own paint shade (sections are fabricated and painted separately).
+ * Lattice mast [R, E; T for the envelope]: four box corner columns (1.5 m, centre lines ±5.25 m),
+ * and per 8.85 m module on every face a girt (0.5 × 0.8 m), X-bracing (0.4 m square tubes) with a
+ * gusset at the crossing and a light strut through it; corner knee braces in plan at every third
+ * girt. Each module gets its own paint shade. The two carriage tracks run the full height on the
+ * south corner columns (the arm face): a dark rail plate with a red stripe on the south face,
+ * returned onto the column's side face [R: red-striped tracks]. Everything stays inside the
+ * "tower-lattice" box (±6.1 m) [T].
  */
 const towerLattice = (rand: () => number): Member[] => {
   const out: Member[] = []
   const at = (de: number, dn: number, u: number): V => enu(TW.e + de, TW.n + dn, u)
-  for (let k = 0; k < TW.sections; k++) {
-    const z0 = TW.base + k * HS, z1 = z0 + HS, last = k === TW.sections - 1
-    const tint = 0.8 + 0.22 * rand()
-    const lv = [z0 + 0.5, z0 + HS / 2, last ? z1 - 0.5 : z1 + 0.5]
-    for (const [cx, cy] of CORNERS) {
-      out.push(bar("tower", at(cx * CL, cy * CL, z0), at(cx * CL, cy * CL, z1), TW.col, TW.col, undefined, tint))
-      if (k > 0) out.push(box("towerDark", TW.e + cx * CL, TW.n + cy * CL, z0, TW.col + 0.36, TW.col + 0.36, 0.7))
-    }
+  /** girt level k = 0 … modules */
+  const zg = (k: number): number => (k === 0 ? TW.base + 0.6 : k === TW.modules ? TW.top - 0.4 : TW.base + k * HM)
+  for (let k = 0; k < TW.modules; k++) {
+    const z0 = TW.base + k * HM, za = zg(k), zb = zg(k + 1)
+    const tint = 0.88 + 0.12 * rand()
+    for (const [cx, cy] of CORNERS) out.push(bar("mast", at(cx * CL, cy * CL, z0), at(cx * CL, cy * CL, z0 + HM), TW.col, TW.col, undefined, tint))
     for (let c = 0; c < 4; c++) {
       const [ax, ay] = CORNERS[c], [bx, by] = CORNERS[(c + 1) % 4]
       const A = (u: number): V => at(ax * CL, ay * CL, u), B = (u: number): V => at(bx * CL, by * CL, u)
-      ;(last ? lv : lv.slice(0, 2)).forEach((z, j) => out.push(ibeam("tower", A(z), B(z), j === 1 ? 0.42 : 0.5, j === 1 ? 0.75 : 1.0, tint)))
-      for (let j = 0; j < 2; j++) {
-        out.push(bar("tower", A(lv[j]), B(lv[j + 1]), 0.42, 0.42, undefined, tint), bar("tower", B(lv[j]), A(lv[j + 1]), 0.42, 0.42, undefined, tint))
-        const me = TW.e + ((ax + bx) / 2) * CL, mn = TW.n + ((ay + by) / 2) * CL, zm = (lv[j] + lv[j + 1]) / 2
-        out.push(ay === by ? box("towerDark", me, mn, zm, 1.5, 0.62, 1.5) : box("towerDark", me, mn, zm, 0.62, 1.5, 1.5))
-      }
+      out.push(bar("mast", A(za), B(za), 0.5, 0.8, undefined, tint))
+      if (k === TW.modules - 1) out.push(bar("mast", A(zb), B(zb), 0.5, 0.8, undefined, tint))
+      out.push(bar("mast", A(za + 0.4), B(zb - 0.4), 0.4, 0.4, undefined, tint), bar("mast", B(za + 0.4), A(zb - 0.4), 0.4, 0.4, undefined, tint))
+      const me = TW.e + ((ax + bx) / 2) * CL, mn = TW.n + ((ay + by) / 2) * CL, zm = (za + zb) / 2
+      out.push(ay === by ? box("mast", me, mn, zm, 1.3, 0.5, 1.1, 0.8 * tint) : box("mast", me, mn, zm, 0.5, 1.3, 1.1, 0.8 * tint))
+      out.push(bar("mast", A(zm), B(zm), 0.3, 0.36, undefined, tint))
     }
-    if (k > 0) {
-      const mids = [[CL, 0], [0, CL], [-CL, 0], [0, -CL]] as const
-      for (let i = 0; i < 4; i++) {
-        const [a1, a2] = mids[i], [b1, b2] = mids[(i + 1) % 4]
-        out.push(ibeam("tower", at(a1, a2, lv[0]), at(b1, b2, lv[0]), 0.36, 0.6, tint))
-      }
-    }
+    if (k > 0 && k % 3 === 0) for (const [cx, cy] of CORNERS) out.push(bar("mast", at(cx * CL, cy * (CL - 1.6), za), at(cx * (CL - 1.6), cy * CL, za), 0.3, 0.4, undefined, tint))
   }
-  // carriage rails on the four corners [W: bearings at the sides], cable trays on the north face [E]
-  for (const [cx, cy] of CORNERS) out.push(box("rail", TW.e + cx * (TW.half + 0.1), TW.n + cy * (TW.half + 0.1), (TW.base + TW.top) / 2 + 3, 0.4, 0.4, TW.top - TW.base - 6))
-  for (const de of [-1.6, 1.6]) out.push(box("grate", TW.e + de, TW.n + TW.half + 0.2, (TW.base + TW.top) / 2, 0.8, 0.25, TW.top - TW.base))
-  // pile caps under the columns
+  // carriage tracks on the two south columns: rail plate + red stripe, south face and side face
+  const zt0 = TW.base + 0.3, zt1 = TW.top - 0.2, nS = TW.n - TW.half
+  for (const sx of [-1, 1]) {
+    const e = TW.e + sx * CL, eO = TW.e + sx * TW.half
+    out.push(block("rail", e - 0.5, e + 0.5, nS - 0.06, nS, zt0, zt1), block("stripe", e - 0.2, e + 0.2, nS - 0.1, nS - 0.06, zt0, zt1))
+    out.push(block("rail", eO, eO + sx * 0.06, nS + 0.25, nS + 1.25, zt0, zt1), block("stripe", eO + sx * 0.06, eO + sx * 0.1, nS + 0.55, nS + 0.95, zt0, zt1))
+  }
+  // cable trays up the north face (hoist and power), inside the column line
+  for (const de of [-1.6, 1.6]) out.push(box("grate", TW.e + de, TW.n + CL + 0.4, (TW.base + TW.top) / 2, 0.8, 0.2, TW.top - TW.base))
+  // pile caps under the columns [T: "tower-pile-caps"]
   for (const [cx, cy] of CORNERS) out.push(box("concrete", TW.e + cx * CL, TW.n + cy * CL, TW.base / 2, 4, 4, TW.base))
-  // floodlight brackets on the south face (lighting the mount and the catch zone) [E]
-  for (const u of [TW.base + 2.5 * HS, TW.base + 5.5 * HS, TOWER.armHeight - 14]) for (const de of [-3.6, 3.6]) {
-    out.push(box("towerDark", TW.e + de, TW.n - TW.half - 0.45, u, 1.6, 0.9, 0.25))
-    out.push(box("lamp", TW.e + de, TW.n - TW.half - 0.95, u + 0.45, 1.3, 0.12, 0.7))
+  // floodlights on the south face (lighting the mount and the catch zone) on a light rail between the columns [T: floodlight boxes]
+  for (const u of FLOOD_U) {
+    out.push(box("mast", TW.e, TW.n - CL, u - 0.1, 2 * CL, 0.3, 0.3))
+    for (const de of [-3.6, 3.6]) {
+      out.push(block("grate", TW.e + de - 0.8, TW.e + de + 0.8, nS - 0.9, TW.n - CL + 0.1, u - 0.125, u + 0.125))
+      out.push(box("lamp", TW.e + de, nS - 0.95, u + 0.45, 1.3, 0.12, 0.7))
+    }
   }
   return out
 }
 
 /**
- * Internal core [E]: switch-back stair (landings every ≈ 3.7 m, 4 per section) between four core
- * columns, an elevator on guide rails west of the stair, grated service platforms at two splices.
+ * Internal core [E]: switch-back stair (two flights per module) between four core columns, an
+ * elevator on guide rails west of the stair, grated service platforms at two girt levels.
  */
 const towerCore = (): Member[] => {
   const out: Member[] = []
   const e0 = TW.e, n0 = TW.n, ce = 2, cn = 2.9, H = TW.top - TW.base, mid = (TW.base + TW.top) / 2
   for (const [sx, sy] of CORNERS) out.push(box("grate", e0 + sx * ce, n0 + sy * cn, mid, 0.3, 0.3, H))
-  const hf = HS / 4
-  for (let f = 0; f < TW.sections * 4; f++) {
+  const hf = HM / 2, flights = TW.modules * 2
+  for (let f = 0; f < flights; f++) {
     const z = TW.base + f * hf + 0.95
     out.push(box("grate", e0, n0 - cn + 0.6, z, 2 * ce, 1.2, 0.18), box("grate", e0, n0 + cn - 0.6, z + hf / 2, 2 * ce, 1.2, 0.18))
     out.push(bar("grate", enu(e0 - ce / 2, n0 - cn + 1.2, z), enu(e0 - ce / 2, n0 + cn - 1.2, z + hf / 2), ce - 0.15, 0.16))
-    out.push(bar("grate", enu(e0 + ce / 2, n0 + cn - 1.2, z + hf / 2), enu(e0 + ce / 2, n0 - cn + 1.2, z + hf), ce - 0.15, 0.16))
+    // the last half flight would come out through the crown deck
+    if (f < flights - 1) out.push(bar("grate", enu(e0 + ce / 2, n0 + cn - 1.2, z + hf / 2), enu(e0 + ce / 2, n0 - cn + 1.2, z + hf), ce - 0.15, 0.16))
   }
   for (const dn of [-1.3, 1.3]) out.push(box("rail", e0 - 3.1, n0 + dn, mid, 0.16, 0.16, H))
-  out.push(box("white", e0 - 3.1, n0, 64, 1.7, 2.3, 2.7))
-  for (const k of [3, 6]) {
-    const z = TW.base + k * HS + 1.1
+  out.push(box("mast", e0 - 3.1, n0, 64, 1.7, 2.5, 2.7))
+  for (const k of [5, 10]) {
+    const z = TW.base + k * HM + 0.5
     out.push(box("grate", e0 + (ce + 4.5) / 2, n0, z, 4.5 - ce, 9, 0.22))
-    out.push(box("grate", e0 + (ce - 4.5) / 2, n0 + (cn + 4.5) / 2, z, 4.5 + ce, 4.5 - cn, 0.22))
-    out.push(box("grate", e0 + (ce - 4.5) / 2, n0 - (cn + 4.5) / 2, z, 4.5 + ce, 4.5 - cn, 0.22))
+    out.push(box("grate", e0 + (ce - 3.8) / 2, n0 + (cn + 4.5) / 2, z, 3.8 + ce, 4.5 - cn, 0.22))
+    out.push(box("grate", e0 + (ce - 3.8) / 2, n0 - (cn + 4.5) / 2, z, 3.8 + ce, 4.5 - cn, 0.22))
   }
   return out
 }
 
 /**
- * Crown [W: pulley at the top, lightning rod, weather station]: top deck, two outrigger beams over the
- * south face carrying the hoist sheaves (Ø 3.2 m) above the carriage, back sheaves at the north edge.
- * The lightning mast (separate mesh) reaches TOWER.height.
+ * Crown [R: lattice crown; W: pulley at the top, lightning rod, weather station; T: "tower-crown"
+ * box]: top deck, a lattice king-post pyramid carrying the lightning rod to TOWER.height, and two
+ * lattice jib girders over the south and north faces with the hoist sheaves (Ø 1.6 m) on common axles.
  */
 const crown = (): Member[] => {
   const out: Member[] = []
-  const T = TW.top, sU = T + 2.6, nF = TW.n - CA.r, nB = TW.n + CL + 0.8
-  out.push(box("towerDark", TW.e, TW.n, T + 0.35, 2 * TW.half + 0.6, 2 * TW.half + 0.6, 0.7))
+  const T = TW.top, zD = T + 0.6, zA = CROWN.apex, zm = (zD + zA) / 2, { foot, head } = CROWN, mid = (foot + head) / 2
+  const at = (de: number, dn: number, u: number): V => enu(TW.e + de, TW.n + dn, u)
+  out.push(box("mast", TW.e, TW.n, T + 0.3, 2 * TW.half, 2 * TW.half, 0.6))
+  for (let c = 0; c < 4; c++) {
+    const [ax, ay] = CORNERS[c], [bx, by] = CORNERS[(c + 1) % 4]
+    out.push(bar("mast", at(ax * foot, ay * foot, zD), at(ax * head, ay * head, zA), 0.45))
+    out.push(bar("mast", at(ax * mid, ay * mid, zm), at(bx * mid, by * mid, zm), 0.3), bar("mast", at(ax * head, ay * head, zA), at(bx * head, by * head, zA), 0.35))
+    out.push(bar("mast", at(ax * foot, ay * foot, zD), at(bx * mid, by * mid, zm), 0.22), bar("mast", at(bx * foot, by * foot, zD), at(ax * mid, ay * mid, zm), 0.22))
+    out.push(bar("mast", at(ax * mid, ay * mid, zm), at(bx * head, by * head, zA), 0.22), bar("mast", at(bx * mid, by * mid, zm), at(ax * head, ay * head, zA), 0.22))
+  }
+  out.push(box("mast", TW.e, TW.n, zA + 0.2, 2 * head + 0.5, 2 * head + 0.5, 0.4))
+  // lightning rod to TOWER.height [T, W]
+  out.push(bar("rail", at(0, 0, zA + 0.4), at(0, 0, zA + 4), 0.28), bar("rail", at(0, 0, zA + 4), at(0, 0, TOWER.height), 0.12))
+  // jib girders and sheaves
+  const zB = T + 1.25, zT = T + 4.3, nS = TW.n - 8.6, nN = TW.n + 7.5, nF = DROP_S + CROWN.sheaveR, nB = DROP_N - CROWN.sheaveR, half = 3.2
   for (const s of [-1, 1]) {
-    const e = TW.e + 3 * s
-    out.push(ibeam("towerDark", enu(e, nB + 0.6, T + 1.3), enu(e, nF - 1.2, T + 1.3), 0.6, 1.2))
-    out.push(bar("towerDark", enu(e, TW.n - CL, T - HS / 2 + 0.5), enu(e, nF - 0.6, T + 0.8), 0.45))
+    const e = TW.e + s * CROWN.jibE
+    out.push(bar("mast", enu(e, nS, zB), enu(e, nN, zB), 0.5, 0.9), bar("mast", enu(e, TW.n - half, zT), enu(e, TW.n + half, zT), 0.4))
+    out.push(bar("mast", enu(e, TW.n - half, zT), enu(e, nS + 0.3, zB + 0.4), 0.34), bar("mast", enu(e, TW.n + half, zT), enu(e, nN - 0.3, zB + 0.4), 0.34))
+    for (const dn of [-half, half]) out.push(bar("mast", enu(e, TW.n + dn, zB), enu(e, TW.n + dn, zT), 0.3))
+    out.push(bar("mast", enu(e, TW.n - half, zB), enu(e, TW.n + half, zT), 0.24), bar("mast", enu(e, TW.n + half, zB), enu(e, TW.n - half, zT), 0.24))
+    const es = TW.e + s * CROWN.sheaveE
     for (const n of [nF, nB]) {
-      out.push(tube("rail", enu(e - 0.3, n, sU), enu(e + 0.3, n, sU), 3.2))
-      out.push(box("towerDark", e - 0.55, n, sU - 0.6, 0.18, 1.2, 2), box("towerDark", e + 0.55, n, sU - 0.6, 0.18, 1.2, 2))
+      out.push(box("mast", e, n, zB + 1.1, 0.3, 1, 1.6))
+      out.push(tube("rail", enu(es - 0.25, n, CROWN.sheaveU), enu(es + 0.25, n, CROWN.sheaveU), 2 * CROWN.sheaveR))
     }
   }
-  out.push(box("towerDark", TW.e, TW.n, T + 1.15, 1.4, 1.4, 0.9))
-  const we = TW.e + 4.6, wn = TW.n + 4.6
-  out.push(tube("grate", enu(we, wn, T + 0.7), enu(we, wn, T + 5.2), 0.14), bar("grate", enu(we - 0.9, wn, T + 5), enu(we + 0.9, wn, T + 5), 0.06), box("white", we, wn, T + 5.35, 0.3, 0.3, 0.3))
-  for (const s of [-1, 1]) out.push(box("white", we + s * 0.9, wn, T + 5.15, 0.22, 0.22, 0.2))
+  for (const n of [nF, nB]) out.push(tube("rail", enu(TW.e - CROWN.jibE, n, CROWN.sheaveU), enu(TW.e + CROWN.jibE, n, CROWN.sheaveU), 0.36))
+  // weather station on the NE corner [W]
+  const we = TW.e + 5.2, wn = TW.n + 5.2
+  out.push(bar("grate", enu(we, wn, zD), enu(we, wn, T + 5), 0.14), bar("grate", enu(we - 0.9, wn, T + 4.8), enu(we + 0.9, wn, T + 4.8), 0.06), box("grate", we, wn, T + 5.15, 0.3, 0.3, 0.3))
   return out
 }
 
-/** hoist cables: crown sheave → carriage sheave, over the top, down to the drawworks [W] */
+/**
+ * Hoist cables [W: winch at the base, pulley at the top]: dead-ended on the carriage's south girder,
+ * up the south face, over the two crown sheaves, down the north face into a covered duct that runs
+ * to the drawworks house.
+ */
 const hoistCables = (): Member[] => {
   const out: Member[] = []
-  const sU = TW.top + 2.6, nF = TW.n - CA.r, nB = TW.n + CL + 0.8, r = 1.6, cU = CA.z1 + 1.9
+  const sU = CROWN.sheaveU, r = CROWN.sheaveR
   for (const s of [-1, 1]) {
-    const e = TW.e + 3 * s
-    out.push(tube("cable", enu(e, nF - r, sU), enu(e, nF - r, cU), 0.16))
-    out.push(tube("cable", enu(e, nF, sU + r), enu(e, nB, sU + r), 0.16))
-    out.push(tube("cable", enu(e, nB + r, sU), enu(e, DW.n0 + 0.8, DW.h + 0.6), 0.16))
+    const e = TW.e + s * CROWN.sheaveE
+    out.push(tube("cable", enu(e, DROP_S, sU), enu(e, DROP_S, CA.z1 + 0.6), 0.16))
+    out.push(tube("cable", enu(e, DROP_S + r, sU + r), enu(e, DROP_N - r, sU + r), 0.16))
+    out.push(tube("cable", enu(e, DROP_N, sU), enu(e, DROP_N, 0.6), 0.16))
+    out.push(block("concrete", e - 0.45, e + 0.45, DROP_N - 0.35, DW.n0, 0.25, 0.9))
   }
   return out
 }
 
 /**
- * Carriage [W, E]: box frame around the tower (three ring levels, corner + mid posts, X-bracing),
- * roller bogies on the corner rails, grated top deck with the arm HPUs, hoist sheaves, the two
- * traverse beams the arm trolleys slide on, knee braces, and the fixed actuator barrels.
+ * Carriage [R: dark portal frame on the tracks; W: cable-hoisted, bearings at the sides; E: sizes;
+ * T: "carriage" and "traverse-beams" boxes]: a 15 m deep box frame wrapping the south, east and west
+ * faces (three ring levels, corner and mid posts, X-bracing) tied across the north face, bogies on
+ * the two tracks and side rollers on all four columns, a grated top deck with handrail, hydraulic
+ * power units and accumulators, the hoist cable dead ends, and — the model's arm kinematics — the traverse
+ * girder (two chords, posts and diagonals) the arm trolleys slide on, with the two actuator barrels.
  */
 const carriage = (): Member[] => {
   const out: Member[] = []
@@ -681,198 +800,213 @@ const carriage = (): Member[] => {
   for (let c = 0; c < 4; c++) {
     const [ax, ay] = CORNERS[c], [bx, by] = CORNERS[(c + 1) % 4]
     const mx = (ax + bx) / 2, my = (ay + by) / 2
-    for (const z of lv) out.push(bar("towerDark", at(ax * R, ay * R, z), at(bx * R, by * R, z), g, g))
-    out.push(bar("towerDark", at(ax * R, ay * R, CA.z0), at(ax * R, ay * R, CA.z1), g, g))
-    out.push(bar("towerDark", at(mx * R, my * R, CA.z0), at(mx * R, my * R, CA.z1), 0.8, 0.8))
+    out.push(bar("black", at(ax * R, ay * R, CA.z0), at(ax * R, ay * R, CA.z1), g, g))
+    if (c === 2) {
+      // north face: open, two tie girders only
+      for (const z of [lv[0], lv[2]]) out.push(bar("black", at(ax * R, ay * R, z), at(bx * R, by * R, z), 0.7, 0.7))
+      continue
+    }
+    for (const z of lv) out.push(bar("black", at(ax * R, ay * R, z), at(bx * R, by * R, z), g, g))
+    out.push(bar("black", at(mx * R, my * R, CA.z0), at(mx * R, my * R, CA.z1), 0.8, 0.8))
     const bays = [[ax, ay, mx, my], [mx, my, bx, by]] as const
     for (let t = 0; t < 2; t++) for (const [p0, p1, q0, q1] of bays) {
-      out.push(bar("towerDark", at(p0 * R, p1 * R, lv[t]), at(q0 * R, q1 * R, lv[t + 1]), 0.45))
-      out.push(bar("towerDark", at(q0 * R, q1 * R, lv[t]), at(p0 * R, p1 * R, lv[t + 1]), 0.45))
+      out.push(bar("black", at(p0 * R, p1 * R, lv[t]), at(q0 * R, q1 * R, lv[t + 1]), 0.45))
+      out.push(bar("black", at(q0 * R, q1 * R, lv[t]), at(p0 * R, p1 * R, lv[t + 1]), 0.45))
     }
   }
-  for (const [cx, cy] of CORNERS) for (const z of [CA.z0 + 1.8, CA.z1 - 1.8]) out.push(box("rail", TW.e + cx * 6.7, TW.n + cy * 6.7, z, 1, 1, 2.4))
-  // yellow walkway railing around the carriage top platform (the real tower has one at every level)
-  const RS = CA.r + 0.05, rU = CA.z1 + 0.1
-  out.push(box("yellow", TW.e + RS, TW.n, rU, 0.07, 2 * RS, 0.07))
-  out.push(box("yellow", TW.e - RS, TW.n, rU, 0.07, 2 * RS, 0.07))
-  out.push(box("yellow", TW.e, TW.n + RS, rU, 2 * RS, 0.07, 0.07))
-  out.push(box("yellow", TW.e, TW.n - RS, rU, 2 * RS, 0.07, 0.07))
-  for (let d = -RS; d <= RS + 0.01; d += 3.05) {
-    for (const [ex, ny] of [[TW.e + RS, TW.n + d], [TW.e - RS, TW.n + d], [TW.e + d, TW.n + RS], [TW.e + d, TW.n - RS]] as const) {
-      out.push(box("yellow", ex, ny, rU - 0.55, 0.07, 0.07, 1.1))
-    }
+  // bogies on the two tracks (south face) and side rollers on the four columns
+  for (const z of [CA.z0 + 1.8, CA.z1 - 1.8]) for (const sx of [-1, 1]) {
+    out.push(block("rail", TW.e + sx * CL - 0.65, TW.e + sx * CL + 0.65, TW.n - R + g / 2, TW.n - TW.half - 0.1, z - 1.2, z + 1.2))
+    for (const sy of [-1, 1]) out.push(block("rail", TW.e + sx * TW.half, TW.e + sx * (R - g / 2), TW.n + sy * CL - 0.6, TW.n + sy * CL + 0.6, z - 1, z + 1))
   }
+  // top deck (grating ring) with handrail
   const di = TW.half + 0.25, dO = R + g / 2, dz0 = CA.z1 - 0.2, dz1 = CA.z1
   out.push(
     block("grate", TW.e - dO, TW.e + dO, TW.n + di, TW.n + dO, dz0, dz1), block("grate", TW.e - dO, TW.e + dO, TW.n - dO, TW.n - di, dz0, dz1),
     block("grate", TW.e + di, TW.e + dO, TW.n - di, TW.n + di, dz0, dz1), block("grate", TW.e - dO, TW.e - di, TW.n - di, TW.n + di, dz0, dz1),
   )
-  // deck handrails on the outer edge
   for (let c = 0; c < 4; c++) {
-    const [ax, ay] = CORNERS[c], [bx, by] = CORNERS[(c + 1) % 4]
-    for (const du of [0.55, 1.1]) out.push(bar("safety", at(ax * (dO - 0.1), ay * (dO - 0.1), CA.z1 + du), at(bx * (dO - 0.1), by * (dO - 0.1), CA.z1 + du), 0.06))
+    const [ax, ay] = CORNERS[c], [bx, by] = CORNERS[(c + 1) % 4], h = dO - 0.1
+    for (const du of [0.55, 1.1]) out.push(bar("grate", at(ax * h, ay * h, CA.z1 + du), at(bx * h, by * h, CA.z1 + du), 0.06))
     for (let k = 0; k < 8; k++) {
       const t = k / 8
-      out.push(box("safety", TW.e + (ax + (bx - ax) * t) * (dO - 0.1), TW.n + (ay + (by - ay) * t) * (dO - 0.1), CA.z1 + 0.55, 0.07, 0.07, 1.1))
+      out.push(box("grate", TW.e + (ax + (bx - ax) * t) * h, TW.n + (ay + (by - ay) * t) * h, CA.z1 + 0.55, 0.07, 0.07, 1.1))
     }
   }
+  // hydraulic power units on the north deck, accumulator bottles on the side decks, hoist cable dead ends on the south girder
   for (const s of [-1, 1]) {
-    out.push(box("white", TW.e + s * 3.2, TW.n + 7.2, CA.z1 + 1.2, 3, 1.8, 2.4))
-    out.push(tube("rail", at(s * 3 - 0.3, -R, CA.z1 + 1.9), at(s * 3 + 0.3, -R, CA.z1 + 1.9), 3.2))
-    out.push(box("towerDark", TW.e + s * 3 - 0.55, TW.n - R, CA.z1 + 1.1, 0.18, 1.4, 2.2), box("towerDark", TW.e + s * 3 + 0.55, TW.n - R, CA.z1 + 1.1, 0.18, 1.4, 2.2))
+    out.push(box("mast", TW.e + s * 5.2, TW.n + 7.2, CA.z1 + 1.2, 2.6, 1.8, 2.4))
+    for (let j = 0; j < 3; j++) out.push(tube("rail", at(s * 7.2, 2.4 + j * 0.95, CA.z1), at(s * 7.2, 2.4 + j * 0.95, CA.z1 + 2.4), 0.7))
+    const es = TW.e + s * CROWN.sheaveE
+    out.push(block("black", es - 0.4, es + 0.4, TW.n - R + g / 2, DROP_S + 0.05, CA.z1 - 0.6, CA.z1 + 0.7))
   }
-  // traverse beams, end posts, knee braces (attached at the back face, clear of the trolley shoes)
-  for (const u of BEAM_U) out.push(box("towerDark", TW.e, BEAM_N, u, 2 * CA.beamHalf, 1.2, 1.3))
+  // traverse girder: two chords, end posts, web posts and diagonals behind the trolley lugs
+  const w0 = BEAM_U[1] + 0.65, w1 = BEAM_U[0] - 0.65, bays = 8, dx = (2 * CA.beamHalf) / bays
+  for (const u of BEAM_U) out.push(box("black", TW.e, BEAM_N, u, 2 * CA.beamHalf, 1.2, 1.3))
+  for (const s of [-1, 1]) out.push(block("black", TW.e + s * (CA.beamHalf - 0.6), TW.e + s * CA.beamHalf, BEAM_N - 0.6, BEAM_N + 0.6, w0, w1))
+  for (let j = 0; j < bays; j++) {
+    const x0 = TW.e - CA.beamHalf + j * dx, up = j % 2 === 0
+    if (j > 0) out.push(box("black", x0, WEB_N, (w0 + w1) / 2, 0.3, 0.3, w1 - w0))
+    out.push(bar("black", enu(x0 + 0.2, WEB_N, up ? w0 : w1), enu(x0 + dx - 0.2, WEB_N, up ? w1 : w0), 0.26))
+  }
+  // actuators: anchor post between the chords, clevis, fixed barrel (the rods are animated meshes)
   for (const s of [-1, 1]) {
-    out.push(block("towerDark", TW.e + s * (CA.beamHalf - 0.6), TW.e + s * CA.beamHalf, BEAM_N - 0.6, BEAM_N + 0.6, BEAM_U[1] - 0.65, BEAM_U[0] + 0.65))
-    out.push(bar("towerDark", at(s * R, -R, lv[0]), enu(TW.e + s * 14.4, BEAM_N + 0.6, BEAM_U[1] - 0.65), 0.6))
-    out.push(bar("towerDark", at(s * R, -R, lv[2]), enu(TW.e + s * 14.4, BEAM_N + 0.6, BEAM_U[0] + 0.65), 0.5))
+    const u = s > 0 ? ACT.uE : ACT.uW, xa = TW.e - s * ACT.anchor
+    out.push(block("black", xa - 0.35, xa + 0.35, ACT.n + 0.3, BEAM_N + 0.6, w0, w1), block("black", xa - 0.35, xa + 0.35, ACT.n - 0.3, ACT.n + 0.3, u - 0.4, u + 0.4))
+    out.push(tube("rail", enu(xa, ACT.n, u), enu(xa + s * ACT.barrel, ACT.n, u), 0.56))
   }
-  // actuator anchors and barrels (rods are animated meshes)
-  out.push(block("towerDark", TW.e - ACT.anchor - 0.45, TW.e - ACT.anchor + 0.45, ACT_N - 0.35, BEAM_N + 0.6, BEAM_U[0] + 0.65, ACT.uE + 0.5))
-  out.push(block("towerDark", TW.e + ACT.anchor - 0.45, TW.e + ACT.anchor + 0.45, ACT_N - 0.35, BEAM_N + 0.6, ACT.uW - 0.5, BEAM_U[1] - 0.65))
-  out.push(tube("arm", enu(TW.e - ACT.anchor, ACT_N, ACT.uE), enu(TW.e - ACT.anchor + ACT.barrel, ACT_N, ACT.uE), 0.66))
-  out.push(tube("arm", enu(TW.e + ACT.anchor, ACT_N, ACT.uW), enu(TW.e + ACT.anchor - ACT.barrel, ACT_N, ACT.uW), 0.66))
   return out
 }
 
-/** bottom of the arm truss at station n: a straight wedge from `rootDepth` to `tipDepth` (the real shape) */
-const armBottom = (n: number): number => {
-  const f = Math.min(1, Math.max(0, (n - TIP_N) / (ROOT_N - TIP_N)))
-  return TOWER.armHeight - (ARM.tipDepth + (ARM.rootDepth - ARM.tipDepth) * f)
-}
-
-/** outer top chord offset at station n (narrows over the last 10 m toward the tip) */
-const armOut = (n: number): number =>
-  n < ARM.tipN ? ARM.topOut - ((ARM.tipN - n) / (ARM.tipN - TIP_N)) * (ARM.topOut - ARM.tipOut) : ARM.topOut
-
 /**
- * One chopstick (s = −1 west, +1 east) in its group frame (group x = inner face, e = s·o with o the
- * outward offset). Top of the rail = TOWER.armHeight, inner face (bumpers) at o = 0, width
- * TOWER.armWidth, wedge depth from `armRootDepth` to `armTipDepth`, tip at the contact model's yMin [T].
+ * One chopstick (s = −1 west, +1 east) in its group frame: group x = the rail's inner edge
+ * (`armInnerAt(·, 0)`), e = s·o with o the outward offset, dz the depth below the rail top.
  *
- * The truss cross-section is a V: two top chords under the track and one lower spine, joined by V
- * webs at every panel point and Warren diagonals in the two inclined side planes. It haunches to
- * 4.6 m at the carriage, tapers to 2.0 m at the tip, carries yellow/black bumper pads on the inner
- * top edge, the top track, and a chrome hydraulic link to the animated actuator rod. The old
- * four-chord rectangular box (which read as a box girder) is gone; the inner face and rail top are
- * unchanged so the contact model still sees exactly the same envelope.
+ * Contact contract [T]: rail top at TOWER.armHeight; rail inner edge at o = 0; tip at the contact
+ * model's yMin; nothing forward of the hinge bay is above the rail, below `armDepthAt(n)`, or inside
+ * the inner face — o ≥ 0 over the rail thickness and o ≥ `armInnerAt` lean below it.
+ *
+ * Structure [R, E]: a three-chord taper truss of round tubes — two top chords (Ø 0.4 m) under the
+ * rail and the walkway, one lower chord (Ø 0.44 m) following the wedge and the inner-face lean —
+ * with a triangular frame at every panel point and Warren diagonals in both side planes and the top
+ * plane; the landing rail (0.85 × 0.3 m) with a hazard-painted inner fascia; a rub plate lying in the
+ * inner-face plane below the rail; a ladder walkway on the outboard half of the top; a narrow tip
+ * with a round wear shoe; at the root the hinge boss (pin + two knuckles) and the lower-chord
+ * bearing, then the trolley that hooks over the traverse chords and carries the actuator lug.
  */
 const armMembers = (s: 1 | -1): Member[] => {
   const out: Member[] = []
   const top = TOWER.armHeight, W = TOWER.armWidth
-  const uT = top - 0.65
-  const at = (o: number, n: number, u: number): V => enu(s * o, n, u)
-  const ab = (mat: MatKey, o0: number, o1: number, n0: number, n1: number, u0: number, u1: number): Member => block(mat, s * o0, s * o1, n0, n1, u0, u1)
-  // trolley with shoes on the traverse beams, actuator clevis and the chrome link to the rod end
-  out.push(ab("towerDark", -0.55, W + 0.55, ROOT_N, ROOT_N + 1.4, top - 6.2, top + 2.4))
-  out.push(ab("towerDark", -0.4, W + 0.4, ROOT_N + 1.4, BEAM_N + 0.2, BEAM_U[0] + 0.65, top + 2.4))
-  out.push(ab("towerDark", -0.4, W + 0.4, ROOT_N + 1.4, BEAM_N + 0.2, top - 6.2, BEAM_U[1] - 0.65))
-  out.push(s > 0 ? ab("towerDark", 0.55, 1.05, ACT_N - 0.35, ACT_N + 0.35, top + 2.4, ACT.uE + 0.5) : ab("towerDark", 0.55, 1.05, ACT_N - 0.35, ACT_N + 0.35, ACT.uW - 0.5, top - 6.2))
-  const actU = s > 0 ? ACT.uE : ACT.uW
-  out.push(ball("chrome", at(0.8, ACT_N, actU), 0.52))
-  out.push(tube("chrome", at(0.8, ACT_N, actU), at(ARM.topIn + 0.2, ROOT_N, uT), 0.2))
-  // ---- V truss
-  const n0 = ROOT_N - 3, nEnd = TIP_N + 0.5
-  const bot = (n: number): number => armBottom(n) + 0.2
-  // The inner face leans outward with depth (TOWER.armFlare at the root depth): the rails that
-  // carry the pins are the narrowest point and the truss opens downward, so the ship's aft section
-  // passes between the arms. The spine and the inner web follow the flare; the rail top and the
-  // bumper pads stay at o = 0, which is the envelope the contact model uses.
-  const flare = (n: number): number => TOWER.armFlare * Math.min(1, (TOWER.armHeight - armBottom(n)) / TOWER.armRootDepth)
-  const mid = (n: number): number => (ARM.topIn + armOut(n)) / 2 + flare(n)
-  // top chords under the track (the outer chord angles in over the tip taper)
-  out.push(bar("arm", at(ARM.topIn, n0, uT), at(ARM.topIn, TIP_N, uT), 0.38))
-  out.push(bar("arm", at(ARM.topOut, n0, uT), at(ARM.topOut, ARM.tipN, uT), 0.38))
-  out.push(bar("arm", at(ARM.topOut, ARM.tipN, uT), at(ARM.tipOut, TIP_N, uT), 0.38))
-  // lower spine: follows the root haunch and the tip taper
-  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(mid(ARM.haunchN), ARM.haunchN, bot(ARM.haunchN)), 0.42))
-  out.push(bar("arm", at(mid(ARM.haunchN), ARM.haunchN, bot(ARM.haunchN)), at(mid(ARM.tipN), ARM.tipN, bot(ARM.tipN)), 0.42))
-  out.push(bar("arm", at(mid(ARM.tipN), ARM.tipN, bot(ARM.tipN)), at(mid(TIP_N), TIP_N, bot(TIP_N)), 0.42))
-  // panel frames: a V from both top chords to the spine, a top strut, one alternating diagonal per
-  // inclined plane (Warren), and the V frame at the root itself
-  const dn = (n0 - nEnd) / ARM.panels
-  const pn = (i: number): number => n0 - i * dn
-  for (let i = 0; i <= ARM.panels; i++) {
-    const n = pn(i), oo = armOut(n), om = mid(n)
-    out.push(bar("arm", at(ARM.topIn, n, uT), at(om, n, bot(n)), 0.24))
-    out.push(bar("arm", at(oo, n, uT), at(om, n, bot(n)), 0.24))
-    out.push(bar("arm", at(ARM.topIn, n, uT), at(oo, n, uT), 0.16))
-    if (i === ARM.panels) continue
-    const m = pn(i + 1), mo = armOut(m), mm = mid(m)
-    out.push(i % 2 === 0 ? bar("arm", at(ARM.topIn, n, uT), at(mm, m, bot(m)), 0.2) : bar("arm", at(om, n, bot(n)), at(ARM.topIn, m, uT), 0.2))
-    out.push(i % 2 === 0 ? bar("arm", at(oo, n, uT), at(mm, m, bot(m)), 0.2) : bar("arm", at(om, n, bot(n)), at(mo, m, uT), 0.2))
+  const at = (o: number, n: number, dz: number): V => enu(s * o, n, top - dz)
+  const ab = (mat: MatKey, o0: number, o1: number, n0: number, n1: number, dz0: number, dz1: number): Member => block(mat, s * o0, s * o1, n0, n1, top - dz0, top - dz1)
+  // ---- trolley: body in front of the girder, shoes over the upper and under the lower chord, actuator lug
+  const actU = s > 0 ? ACT.uE : ACT.uW, back = ROOT_N + 1.4
+  out.push(ab("black", -0.55, W + 0.55, ROOT_N, back, -2.4, 6.2))
+  out.push(ab("black", -0.4, W + 0.4, back, BEAM_N + 0.2, -2.4, top - (BEAM_U[0] + 0.65)))
+  out.push(ab("black", -0.4, W + 0.4, back, BEAM_N + 0.2, top - (BEAM_U[1] - 0.65), 6.2))
+  out.push(ab("black", ACT.lug - 0.35, ACT.lug + 0.35, back, ACT.n + 0.3, top - actU - 0.4, top - actU + 0.4))
+  // ---- truss
+  const rC = ARM.chord / 2, rS = ARM.spine / 2
+  /** top chord axes: under the rail; the inner one stands behind the rub plate */
+  const dzT = ARM.rail + rC, oIn = behind(dzT, rC, ARM.pad + 0.02)
+  const oOut = (n: number): number => (n < TAPER_N ? ARM.tipOut + ((W - rC - ARM.tipOut) * (n - TIP_N)) / (TAPER_N - TIP_N) : W - rC)
+  /** lower chord axis: its underside on the wedge, its inner side on the inner face */
+  const dzS = (n: number): number => armDepthAt(n) - rS - 0.03
+  const tI = (n: number): V => at(oIn, n, dzT), tO = (n: number): V => at(oOut(n), n, dzT), sp = (n: number): V => at(behind(dzS(n), rS), n, dzS(n))
+  const nTip = TIP_N + 0.4
+  out.push(pipe("black", tI(ROOT_N), tI(nTip), ARM.chord), pipe("black", tO(ROOT_N), tO(TAPER_N), ARM.chord), pipe("black", tO(TAPER_N), tO(nTip), ARM.chord))
+  const st = [ROOT_N, ...Array.from({ length: ARM.panels + 1 }, (_, i) => TRUSS_N - (i * (TRUSS_N - TRUSS_END)) / ARM.panels)]
+  for (let i = 0; i < st.length; i++) {
+    const n = st[i]
+    out.push(pipe("black", tI(n), sp(n), ARM.post), pipe("black", tO(n), sp(n), ARM.post), pipe("black", tI(n), tO(n), ARM.rung))
+    if (i === st.length - 1) continue
+    const m = st[i + 1], even = i % 2 === 0
+    out.push(pipe("black", sp(n), sp(m), ARM.spine))
+    out.push(even ? pipe("black", tI(n), sp(m), ARM.diag) : pipe("black", sp(n), tI(m), ARM.diag))
+    out.push(even ? pipe("black", tO(n), sp(m), ARM.diag) : pipe("black", sp(n), tO(m), ARM.diag))
+    out.push(even ? pipe("black", tI(n), tO(m), ARM.diag) : pipe("black", tO(n), tI(m), ARM.diag))
   }
-  // root haunch: V frames and diagonal gussets (an open truss, not a solid rectangular root box)
-  const rootMid = mid(ROOT_N)
-  out.push(bar("arm", at(ARM.topIn, ROOT_N, uT), at(rootMid, ROOT_N, bot(ROOT_N)), 0.24))
-  out.push(bar("arm", at(ARM.topOut, ROOT_N, uT), at(rootMid, ROOT_N, bot(ROOT_N)), 0.24))
-  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(ARM.topIn, ROOT_N, uT), 0.3))
-  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(ARM.topOut, ROOT_N, uT), 0.3))
-  out.push(bar("arm", at(mid(n0), n0, bot(n0)), at(rootMid, ROOT_N, bot(ROOT_N)), 0.28))
-  out.push(bar("arm", at(ARM.topIn, n0, uT), at(ARM.topIn, ROOT_N, uT), 0.38))
-  out.push(bar("arm", at(ARM.topOut, n0, uT), at(ARM.topOut, ROOT_N, uT), 0.38))
-  // track on top (top surface = TOWER.armHeight): a narrow rail beam over the inner catch chord,
-  // not a full-width slab, so the outer top chord and the V below stay visible
-  out.push(ab("rail", 0.1, 0.98, TIP_N + 0.15, ROOT_N, top - 0.32, top))
-  for (let n = ROOT_N - 2.4; n > TIP_N + 1; n -= 4.68) out.push(ab("towerDark", 0.1, 0.98, n - 0.08, n + 0.08, top - 0.36, top - 0.02))
-  // White catch shoes at the tips: the real Mechazilla arms end in a white fairing/guide around the
-  // rail, with a yellow/black stripe on the outer end. Purely visual: the contact envelope (inner
-  // face at o = 0, rail top at TOWER.armHeight) is untouched.
-  out.push(ab("white", 0.06, W + 0.12, TIP_N + 0.15, TIP_N + 2.4, top - 1.55, top - 0.06))
-  out.push(ab("safety", 0.06, W + 0.12, TIP_N - 0.06, TIP_N + 0.17, top - 1.5, top - 0.12))
-  out.push(bar("white", at(0.5, TIP_N + 2.35, top - 1.45), at(0.95, TIP_N + 3.3, top - 2.15), 0.42))
-  out.push(bar("white", at(W - 0.5, TIP_N + 2.35, top - 1.45), at(W - 0.2, TIP_N + 3.3, top - 2.15), 0.42))
-  // inner bumper/rub faces over the catch zone (the pads define the inner face at o = 0 exactly)
-  for (let k = 0; k < 9; k++) {
-    const nc = 7 - k * 2.4
-    out.push(ab("yellow", 0, 0.16, nc - 0.85, nc + 0.85, top - 1.1, top - 0.1))
+  // ---- landing rail (top = TOWER.armHeight, inner edge o = 0) with its hazard fascia
+  out.push(ab("rail", ARM.edge, ARM.railW, TIP_N, ROOT_N, 0, ARM.rail))
+  const segs = 20, dn = (ROOT_N - TIP_N) / segs
+  for (let k = 0; k < segs; k++) out.push(ab("yellow", 0, ARM.edge, TIP_N + k * dn, TIP_N + (k + 1) * dn, 0, ARM.rail))
+  // ---- rub plate in the inner-face plane (its inner surface 1 cm behind `armInnerAt`)
+  const dzm = (ARM.padTop + ARM.padBot) / 2, q = ARM.pad / 2 + 0.01
+  const po = innerLean(dzm) + q / LEAN_SEC, pz = dzm - (q * LEAN_K) / LEAN_SEC
+  out.push(bar("rail", at(po, TIP_N + 3, pz), at(po, TRUSS_N, pz), (ARM.padBot - ARM.padTop) * LEAN_SEC, ARM.pad, enu(s, 0, LEAN_K)))
+  // ---- ladder walkway on the outboard half of the top (stringers on the frame rungs, below the rail top)
+  const wIn = ARM.railW + 0.1, wOut = W - 0.1
+  for (const o of [wIn, wOut]) out.push(bar("rail", at(o, ROOT_N, ARM.rail + 0.05), at(o, TAPER_N, ARM.rail + 0.05), 0.1))
+  for (let n = ROOT_N - 0.4; n > TAPER_N; n -= 0.8) out.push(ab("rail", wIn - 0.05, wOut + 0.05, n - 0.15, n + 0.15, ARM.rail - 0.05, ARM.rail))
+  // ---- tip: solid shoe under the rail with a round nose ending exactly at the tip station
+  const dTip = armDepthAt(TIP_N) - 0.02, sIn = innerLean(dTip) + 0.02, sOut = ARM.tipOut + rC, rN = (sOut - sIn) / 2
+  out.push(ab("black", sIn, sOut, TIP_N + rN, TIP_N + 1.1, ARM.rail, dTip))
+  out.push(tube("rail", at((sIn + sOut) / 2, TIP_N + rN, dTip), at((sIn + sOut) / 2, TIP_N + rN, ARM.rail), 2 * rN))
+  // ---- hinge boss between the top chords (vertical pin, two knuckles, clevis plate from the trolley)
+  const hN = ROOT_N - ARM.hingeN, hO = ARM.hingeO
+  out.push(tube("rail", at(hO, hN, 1.75), at(hO, hN, ARM.rail), 0.76))
+  out.push(tube("rail", at(hO, hN, 0.62), at(hO, hN, 0.32), 1), tube("rail", at(hO, hN, 1.45), at(hO, hN, 1.15), 1))
+  out.push(ab("black", hO - 0.45, W, hN, ROOT_N, 0.66, 1.1))
+  // ---- lower-chord bearing at the trolley
+  const rB = 0.32, bz = (n: number): number => armDepthAt(n) - rB - 0.03
+  out.push(tube("rail", at(behind(bz(ROOT_N - 0.7), rB), ROOT_N - 0.7, bz(ROOT_N - 0.7)), at(behind(bz(ROOT_N), rB), ROOT_N, bz(ROOT_N)), 2 * rB))
+  return out
+}
+
+/** box truss of round tubes between a and b: four chords, a frame at every panel point, Warren diagonals on the four faces */
+const boxTruss = (mat: MatKey, a: V, b: V, side: V, hw: number, hh: number, panels: number, chord: number, web: number): Member[] => {
+  const out: Member[] = []
+  const up = new THREE.Vector3().crossVectors(side, b.clone().sub(a).normalize()).normalize()
+  const p = (t: number, i: number, j: number): V => a.clone().lerp(b, t).addScaledVector(side, i * hw).addScaledVector(up, j * hh)
+  for (const i of [-1, 1]) for (const j of [-1, 1]) out.push(pipe(mat, p(0, i, j), p(1, i, j), chord))
+  for (let k = 0; k <= panels; k++) {
+    const t = k / panels
+    for (const i of [-1, 1]) out.push(pipe(mat, p(t, i, -1), p(t, i, 1), web))
+    for (const j of [-1, 1]) out.push(pipe(mat, p(t, -1, j), p(t, 1, j), web))
+    if (k === panels) continue
+    const t2 = (k + 1) / panels, f = k % 2 === 0 ? 1 : -1
+    for (const i of [-1, 1]) out.push(pipe(mat, p(t, i, -f), p(t2, i, f), web * 0.85))
+    for (const j of [-1, 1]) out.push(pipe(mat, p(t, -f, j), p(t2, f, j), web * 0.85))
   }
-  out.push(ab("rail", 0.02, 0.1, TIP_N + 1.2, ARM.haunchN + 1.5, top - 1.32, top - 1.16))
-  // open V tip frame: the two top chords, the spine node and two V legs (no full-depth end plate that
-  // would hide the cross-section end-on); small rail end cap + chevron at the contact tip
-  out.push(bar("arm", at(ARM.topIn, TIP_N + 0.05, uT), at(mid(TIP_N), TIP_N + 0.05, bot(TIP_N)), 0.24))
-  out.push(bar("arm", at(armOut(TIP_N), TIP_N + 0.05, uT), at(mid(TIP_N), TIP_N + 0.05, bot(TIP_N)), 0.24))
-  out.push(bar("arm", at(ARM.topIn, TIP_N + 0.05, uT), at(armOut(TIP_N), TIP_N + 0.05, uT), 0.18))
-  out.push(ab("rail", 0.1, 0.98, TIP_N, TIP_N + 0.12, top - 0.32, top))
-  // chevron marker on the V tip frame below the rail (visible end-on and from the side)
-  out.push(ab("yellow", 0.16, 0.92, TIP_N, TIP_N + 0.04, top - 0.5, top - 0.36))
-  out.push(tube("cable", at(ARM.topOut + 0.04, n0, top - 1.4), at(ARM.topOut + 0.04, ARM.tipN, top - 1.4), 0.14))
-  out.push(tube("cable", at(ARM.topOut + 0.04, ARM.tipN, top - 1.4), at(armOut(TIP_N) + 0.04, TIP_N + 1, top - 1.4), 0.14))
   return out
 }
 
 /**
- * Ship quick-disconnect arm, stowed (pointing west along the south face): box truss 2.4 × 3 m × 20 m,
- * hinge on the SW column, swing actuator, QD housing with clamshell hood, umbilical tray with the
- * LOX/CH₄/LN₂ lines that rise inside the west face from the pipe rack [W: SQD arm; E: sizes].
+ * Ship QD arm, parked [R, E; T: "ship-qd-arm" box]: a shoe on the west track of the SW column, two
+ * brackets to the hinge post, the upper arm (box truss 2.1 × 2 m × 10.3 m), the elbow pin with cheek
+ * plates, the forearm (box truss, dropping 1.2 m over 7.6 m), the QD head with its plate facing the
+ * vehicle side, a swing cylinder under the arm, and the three propellant hoses that leave the tower
+ * through the south face and hang under the north lower chord.
  */
-const sqdMembers = (): Member[] => {
+const qdMembers = (): Member[] => {
   const out: Member[] = []
-  const e0 = SQD.e - 0.6, e1 = e0 - SQD.len, n = SQD.n, u = SQD.u, hw = SQD.w / 2, hh = SQD.h / 2
-  for (const du of [-2.2, 1.2]) out.push(bar("towerDark", enu(TW.e - CL, TW.n - CL, u + du), enu(SQD.e, SQD.n, u + du), 0.9, 0.7))
-  out.push(tube("towerDark", enu(SQD.e, SQD.n, u - 3.2), enu(SQD.e, SQD.n, u + 1.7), 1.1))
-  for (const sn of [-hw, hw]) for (const su of [-hh, hh]) out.push(bar("towerDark", enu(e0, n + sn, u + su), enu(e1, n + sn, u + su), 0.38))
-  const P = 8, dl = SQD.len / P
-  for (let i = 0; i <= P; i++) {
-    const e = e0 - i * dl
-    for (const sn of [-hw, hw]) out.push(bar("towerDark", enu(e, n + sn, u - hh), enu(e, n + sn, u + hh), 0.3))
-    for (const su of [-hh, hh]) out.push(bar("towerDark", enu(e, n - hw, u + su), enu(e, n + hw, u + su), 0.26))
-    if (i === P) continue
-    const e2 = e - dl, up = i % 2 === 0
-    for (const sn of [-hw, hw]) out.push(bar("towerDark", enu(e, n + sn, up ? u + hh : u - hh), enu(e2, n + sn, up ? u - hh : u + hh), 0.24))
-    out.push(bar("towerDark", enu(e, n - hw, u + hh), enu(e2, n + hw, u + hh), 0.2), bar("towerDark", enu(e, n - hw, u - hh), enu(e2, n + hw, u - hh), 0.2))
-  }
-  out.push(box("towerDark", e1 - 1, n, u, 2, 3, 3.2), box("rail", e1 - 1, n - 1.6, u - 0.2, 1.6, 0.25, 2.2))
-  out.push(block("grate", e1, e0, n - 0.9, n + 0.9, u + hh + 0.19, u + hh + 0.31))
-  out.push(tube("arm", enu(TW.e - CL - 0.4, TW.n - CL + 0.6, u + 3), enu(SQD.e - 4.5, n, u + hh), 0.5))
-  // feed lines: rack → inside the west face → up → out → along the outside → umbilical tray
-  const lanes = [-0.5, 0.15, 0.62] as const
+  const { n, u } = QD
+  // shoe on the track: upper block, back plate, lower block (the hoses pass through the slot)
+  const sE0 = TW.e - TW.half - 0.05, sE1 = TW.e - 5, sN1 = TW.n - TW.half - 0.1
+  out.push(block("black", sE0, sE1, sN1 - 0.6, sN1, u - 1.3, u + 1.25), block("black", sE0, sE1, sN1 - 0.08, sN1, u - 2.6, u - 1.3), block("black", sE0, sE1, sN1 - 0.6, sN1, u - 3.5, u - 2.6))
+  for (const du of [-0.7, 0.7]) out.push(bar("black", enu(TW.e - 5.5, sN1 - 0.3, u + du), enu(QD.hingeE, n, u + du), 0.7, 0.5))
+  out.push(tube("rail", enu(QD.hingeE, n, u - 1.25), enu(QD.hingeE, n, u + 1.25), 1))
+  // upper arm, elbow, forearm
+  out.push(...boxTruss("black", enu(QD.e0, n, u), enu(QD.e1, n, u), NORTH, QD.hw, QD.hh, QD.panels, 0.3, 0.2))
+  out.push(tube("rail", enu(QD.elbowE, n - QD.hw - 0.25, u), enu(QD.elbowE, n + QD.hw + 0.25, u), 0.9))
+  for (const sn of [-1, 1]) out.push(box("black", QD.elbowE, n + sn * QD.hw, u, 1.5, 0.16, 1.5))
+  const fU = u - 0.1
+  out.push(...boxTruss("black", enu(QD.f0, n, fU), enu(QD.f1, n, fU - QD.drop), NORTH, QD.fhw, QD.fhh, QD.fpanels, 0.26, 0.18))
+  // QD head and plate
+  out.push(block("black", QD.f1 - 2.4, QD.f1, n - 1.3, n + 1.3, 93.3, u))
+  out.push(block("rail", QD.f1 - 2.9, QD.f1 + 0.3, n - 1.52, n - 1.3, 93.3, u + 0.2))
+  // swing cylinder under the arm: lower shoe → lug under the south lower chord
+  const lugE = QD.e0 - 5.2, lugN = n - QD.hw
+  out.push(tube("rail", enu(TW.e - 5.6, sN1 - 0.35, u - 3.05), enu(lugE, lugN, u - 2.4), 0.4))
+  out.push(bar("black", enu(lugE, lugN, u - QD.hh), enu(lugE, lugN, u - 2.55), 0.3))
+  // hoses: tower riser → south face → along the arm under the north lower chord → down the forearm
   for (let i = 0; i < 3; i++) {
-    const p = PIPES[i], uR = RACK.u1 + 0.45 + p.dia / 2, uT = u + hh + 0.31 + p.dia / 2, eIn = TW.e - CL + 0.75
-    out.push(...pipeRun(p.mat, [
-      enu(RACK.e1, p.n, uR), enu(eIn, p.n, uR), enu(eIn, p.n, uT), enu(SQD.e, p.n, uT), enu(SQD.e, n + lanes[i], uT), enu(e1 - 0.2, n + lanes[i], uT),
-    ], p.dia))
+    const z = QD.hoseU - i * QD.hoseStep, eS = TW.e - 4.25 + 0.35 * i
+    out.push(...hoseRun("black", [
+      enu(RISER_E, PIPES[i].n, z), enu(eS, PIPES[i].n, z), enu(eS, QD.hoseN, z), enu(QD.e1 - 0.4, QD.hoseN, z), enu(QD.f1 + 0.2, QD.hoseN, z - QD.drop),
+    ], QD.hose))
+  }
+  // hose clips under the north lower chords
+  for (let k = 0; k <= QD.panels; k++) {
+    const e = QD.e0 + ((QD.e1 - QD.e0) * k) / QD.panels
+    out.push(block("black", e - 0.04, e + 0.04, QD.hoseN - 0.25, n + QD.hw, QD.hoseU - 2 * QD.hoseStep - 0.25, u - QD.hh))
+  }
+  for (let k = 0; k <= QD.fpanels; k++) {
+    const t = k / QD.fpanels, e = QD.f0 + (QD.f1 - QD.f0) * t, dz = QD.drop * t
+    out.push(block("black", e - 0.04, e + 0.04, QD.hoseN - 0.25, n + QD.fhw, QD.hoseU - 2 * QD.hoseStep - 0.25 - dz, fU - QD.fhh - dz))
+  }
+  return out
+}
+
+/**
+ * Propellant risers for the ship QD (LOX, CH₄, LN₂): from the pipe rack into the west side of the
+ * mast and up inside it to the QD level, where the hoses take over [E]. Site piping (site pool).
+ */
+const qdRisers = (): Member[] => {
+  const out: Member[] = []
+  for (let i = 0; i < 3; i++) {
+    const p = PIPES[i], uR = RACK.u1 + 0.45 + p.dia / 2
+    out.push(...pipeRun(p.mat, [enu(RACK.e1, p.n, uR), enu(RISER_E, p.n, uR), enu(RISER_E, p.n, QD.hoseU + 0.3)], p.dia))
   }
   return out
 }
@@ -1146,25 +1280,25 @@ export const makePad = (): PadModel => {
   const geos = makeProfiles()
   const farm = tankFarm(mats)
   const env = site(mats)
-  const fixed: Member[] = [
-    ...towerLattice(rand), ...towerCore(), ...crown(), ...hoistCables(), ...carriage(), ...sqdMembers(),
-    ...mountMembers(rand), ...pipeRack(), ...farm.members, ...env.members,
-  ]
-  root.add(...instance(fixed, mats, geos), ...mountMeshes(mats), ...farm.meshes, ...env.meshes)
-  // lightning mast to TOWER.height [T, W], SQD hood
-  const mastBase = TW.top + 1.6
-  const mast = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.3, TOWER.height - mastBase, 10), mats.towerDark))
-  mast.position.copy(enu(TW.e, TW.n, (mastBase + TOWER.height) / 2))
-  const hood = shadowed(new THREE.Mesh(halfCylinder(1.6, 2.2, "e"), mats.arm))
-  hood.position.copy(enu(SQD.e - 0.6 - SQD.len - 1, SQD.n, SQD.u + 1.6))
-  root.add(mast, hood)
-  // aviation obstruction lights: crown corners, mast tip, mid-height corners
-  const beacons: V[] = [enu(TW.e, TW.n, TOWER.height + 0.2)]
-  for (const [cx, cy] of CORNERS) beacons.push(enu(TW.e + cx * 6.2, TW.n + cy * 6.2, TW.top + 0.9), enu(TW.e + cx * 6.3, TW.n + cy * 6.3, TW.base + 4.5 * HS))
+  // two instance pools: the tower (mast, crown, carriage, traverse girder, QD arm) and the site
+  const towerMembers: Member[] = [...towerLattice(rand), ...towerCore(), ...crown(), ...hoistCables(), ...carriage(), ...qdMembers()]
+  const siteMembers: Member[] = [...qdRisers(), ...mountMembers(rand), ...pipeRack(), ...farm.members, ...env.members]
+  const siteGroup = new THREE.Group()
+  siteGroup.name = "site"
+  siteGroup.add(...instance(siteMembers, mats, geos), ...mountMeshes(mats), ...farm.meshes, ...env.meshes)
+  const tower = new THREE.Group()
+  tower.name = "mechazilla"
+  tower.add(...instance(towerMembers, mats, geos))
+  // aviation obstruction lights: rod tip, crown corners, mid-height corners
+  const beacons: V[] = [enu(TW.e, TW.n, TOWER.height - 0.28)]
+  for (const [cx, cy] of CORNERS) beacons.push(enu(TW.e + cx * (TW.half - 0.2), TW.n + cy * (TW.half - 0.2), TW.top + 0.9), enu(TW.e + cx * (TW.half - 0.2), TW.n + cy * (TW.half - 0.2), TW.base + 7 * HM + 0.7))
   const lights = instancedAt(new THREE.SphereGeometry(0.28, 10, 8), mats.red, beacons)
   lights.castShadow = false
-  root.add(lights)
-  // chopsticks: one group per arm, translated by setArms (inner faces at ±gap/2 [T])
+  lights.name = "beacons"
+  tower.add(lights)
+  root.add(siteGroup, tower)
+  // chopsticks: one group per arm (direct children of the root), translated by setArms so that the
+  // rail's inner edge sits at ±gap/2 about the pair centre [T: armInnerX]
   const arms = ([-1, 1] as const).map((s) => {
     const g = new THREE.Group()
     g.name = s < 0 ? "chopstick-west" : "chopstick-east"
@@ -1176,25 +1310,27 @@ export const makePad = (): PadModel => {
   const rodGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 14).rotateZ(Math.PI / 2)
   const rods = ([-1, 1] as const).map((s) => {
     const m = shadowed(new THREE.Mesh(rodGeo, mats.chrome))
-    m.position.copy(enu(0, ACT_N, s > 0 ? ACT.uE : ACT.uW))
+    m.name = s < 0 ? "rod-west" : "rod-east"
+    m.position.copy(enu(0, ACT.n, s > 0 ? ACT.uE : ACT.uW))
     m.scale.set(1, 0.38, 0.38)
-    root.add(m)
+    tower.add(m)
     return m
   })
-  // `cx`: east offset of the arm pair's centre (the tower-side tracking of the ship, [T] ArmState.cx)
+  // `open`: 1 open … 0 closed (clamped; non-finite → open). `cx`: east offset of the arm pair's centre
+  // (the tower-side tracking of the ship, [T] ArmState.cx; non-finite → 0)
   const setArms = (open: number, cx = 0): void => {
     const k = Math.min(1, Math.max(0, Number.isFinite(open) ? open : 1))
     const c = Number.isFinite(cx) ? cx : 0
     const gap = TOWER.closedGap + (TOWER.openGap - TOWER.closedGap) * k
-    arms.forEach((g, i) => {
+    for (let i = 0; i < 2; i++) {
       const s = i === 0 ? -1 : 1
-      g.position.set(TW.e + c + (s * gap) / 2, 0, 0)
-      const xb = TW.e - s * ACT.anchor + s * ACT.barrel, xl = TW.e + c + s * (gap / 2 + 0.8)
+      arms[i].position.set(TW.e + c + (s * gap) / 2, 0, 0)
+      const xb = TW.e - s * ACT.anchor + s * ACT.barrel, xl = TW.e + c + s * (gap / 2 + ACT.lug)
       const rod = rods[i]
       rod.position.x = (xb + xl) / 2
       rod.scale.x = Math.max(0.02, Math.abs(xl - xb))
       rod.visible = Math.abs(xl - xb) > 0.05
-    })
+    }
   }
   setArms(1)
   return { root, setArms }

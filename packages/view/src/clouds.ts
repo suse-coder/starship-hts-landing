@@ -49,6 +49,11 @@ export interface CloudFrame {
   readonly extent?: number
   /** 0..1 hand-off weight; the deck fades out above the global layer and in from orbit */
   readonly fade?: number
+  /**
+   * coarse ray-march samples through the deck (default 56; the shader adds up to 50 % for long
+   * paths and refines to quarter steps inside cloud). The quality governor lowers it on slow GPUs.
+   */
+  readonly steps?: number
 }
 
 export interface CloudDeck {
@@ -756,6 +761,7 @@ export const makeClouds = (opts?: { coverage?: number; base?: number; top?: numb
     uniforms.uPixAng.value = 2 / (Math.abs(camera.projectionMatrix.elements[5]) * Math.max(hpx, 1))
   }
   const lum = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+  const DEFAULT_STEPS = uniforms.uSteps.value
   const probe = makeSunProbe(noise, base, top, extent, Math.min(1, coverage * K.covGain))
   const update = (f: CloudFrame): void => {
     mesh.position.set(f.origin.x, f.origin.y + (yLo + top) / 2, f.origin.z)
@@ -764,6 +770,7 @@ export const makeClouds = (opts?: { coverage?: number; base?: number; top?: numb
     shared.uTime.value = f.time
     shared.uExtent.value = Math.max(1000, Math.min(maxExtent, f.extent ?? extent))
     shared.uFade.value = Math.max(0, Math.min(1, f.fade ?? 1))
+    uniforms.uSteps.value = Math.max(16, Math.min(96, f.steps ?? DEFAULT_STEPS))
     shared.uDrift.value.set(f.wind[0] * f.time, -f.wind[1] * f.time)
     // shear lean: tops displaced downwind (≈ 250 m at the top for 10 m/s)
     const ws = Math.hypot(f.wind[0], f.wind[1])
@@ -780,8 +787,8 @@ export const makeClouds = (opts?: { coverage?: number; base?: number; top?: numb
     // ground bounce under the bases: Gulf water + coastal scrub, albedo ≈ 0.1, Lambertian
     uniforms.uGround.value.setRGB(0.07, 0.065, 0.05).multiplyScalar(lum(sun) * sy + Math.PI * l * 0.3)
     // aerial-perspective colour: horizon sky (desaturated, brighter than the mean sky) + a little sunlight
-    uniforms.uHaze.value.setRGB(0.35 * sk.r + 0.65 * l, 0.35 * sk.g + 0.65 * l, 0.35 * sk.b + 0.65 * l).multiplyScalar(2.4)
-      .add(new THREE.Color().copy(sun).multiplyScalar(0.02))
+    const hz = uniforms.uHaze.value.setRGB(0.35 * sk.r + 0.65 * l, 0.35 * sk.g + 0.65 * l, 0.35 * sk.b + 0.65 * l).multiplyScalar(2.4)
+    hz.r += 0.02 * sun.r; hz.g += 0.02 * sun.g; hz.b += 0.02 * sun.b
     sun.multiplyScalar(SUN_GAIN)
     // cloud-shadow floor: fraction of the ground irradiance that is diffuse sky light
     const eSun = lum(f.sunColor) * e * sy, eSky = Math.PI * l

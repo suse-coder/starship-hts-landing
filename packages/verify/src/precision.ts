@@ -1,112 +1,58 @@
 import type { Phase } from "@ship/gnc"
 
 /**
- * Phase precision policy: where a metre or a m/s of error still costs the catch, and where it does
- * not. Every number here is a measurement, not a preference — the sensitivity is the change of the
- * *final* catch error (m) per 1 m/s of lateral velocity error injected at the start of the phase,
- * measured by flying the rest of the mission from a perturbed state (`scripts/refine-phases.ts
- * --measure` writes the table this reads). The allocation below turns a compute budget into
- * planner effort per phase, so the descent stays under its wall-clock limit while the terminal
- * (which owns the last metre) gets the resolution.
+ * Phase precision: how each phase of the descent is planned and how finely, as flown.
+ *
+ * The descent is not solved by one optimiser at one resolution. Each phase gets the method and
+ * the effort that its leverage on the catch justifies, inside the wall-clock budget of the whole
+ * mission (30 s). The table states what the flight software does (`packages/gnc`) and what it
+ * costs, measured with `scripts/phase-profile.ts`; `reach` is how large an error handed over by the
+ * previous phase this phase still removes, measured on the 6-DOF model (`scripts/verify-model.ts`,
+ * `scripts/gate-check.ts`) — or marked as not measured.
  */
 export interface PhasePrecision {
   readonly phase: Phase
-  /**
-   * Final-miss change per m/s of lateral velocity error at the phase start (m per m/s). The values
-   * below are ESTIMATES from the measured behaviour of the phases (belly divert ~0.9, flip kick
-   * fixed by the nose azimuth ~2.4, single engine ~1 m/s² lateral ~3.1, terminal ~5); the field is
-   * measured by `bun scripts/refine-phases.ts --measure`, which replaces them with 6-DOF
-   * perturbation results. Until that run is in the repository, treat them as a hypothesis.
-   */
-  readonly sensitivity: number
-  readonly sensitivitySource: "measured" | "estimate"
-  /** planner effort tier: 0 = none (open-loop coast), 3 = highest (the catch) */
-  readonly tier: 0 | 1 | 2 | 3
-  /** longest planning epoch (s) and the integration cap of the phase's predictor (s) */
+  /** what decides the path in this phase */
+  readonly method: string
+  /** integration/control step of the flight (s) and of its prediction rollouts (s; 0 = none) */
+  readonly dt: number
+  readonly dtRollout: number
+  /** planning cadence (s) and the vehicle-model rollouts spent per planning epoch */
   readonly epoch: number
-  readonly dtMax: number
-  /** rollouts the phase may spend per epoch at tier 3 */
-  readonly rollouts: number
+  readonly rolloutsPerEpoch: number
+  /** measured wall time of this phase's planning in the no-wind mission (s) */
+  readonly planCost: number
+  /** error from upstream that this phase still removes, and how it was established */
+  readonly reach: string
 }
 
-/**
- * Phase sensitivities and the effort they justify. Estimates today (`sensitivitySource`), measured
- * by `refine-phases.ts --measure`. The ordering is the physics: the coast and entry phases are
- * self-correcting (drag removes a lateral velocity error over 1 500 s); the belly flop is where the
- * ship is *aimed*; the flip amplifies what the belly delivered (its pitch plane is fixed by the
- * nose azimuth and it cannot re-aim); the single engine has ~1 m/s² of lateral authority, and the
- * terminal is the tightest.
- */
 export const PHASE_PRECISION: readonly PhasePrecision[] = [
-  { phase: "bellyFlop", sensitivitySource: "estimate", sensitivity: 0.9, tier: 2, epoch: 12, dtMax: 0.05, rollouts: 6 },
-  { phase: "flip", sensitivitySource: "estimate", sensitivity: 2.4, tier: 2, epoch: 9, dtMax: 0.01, rollouts: 2 },
-  { phase: "landing", sensitivitySource: "measured", sensitivity: 0.8, tier: 3, epoch: 0.2, dtMax: 0.01, rollouts: 1 },
-  { phase: "terminal", sensitivitySource: "estimate", sensitivity: 5.0, tier: 3, epoch: 0.02, dtMax: 0.004, rollouts: 0 },
+  {
+    phase: "highAlpha", method: "bank plan on the 3-DOF predictor; its aim is corrected by 6-DOF rollouts to flip completion, each correction verified by a second rollout before it is flown (trust region, ≤ 3 rollouts)",
+    dt: 0.05, dtRollout: 0.1, epoch: 50, rolloutsPerEpoch: 3, planCost: 11.7,
+    reach: "leaves 0.1–1.5 km for the belly flop; NOT robust — of 12 neighbouring tuning points 5 delivered inside the belly flop's reach (measured)",
+  },
+  {
+    phase: "bellyFlop", method: "two-segment lift-azimuth plan; defect correction: the fast point-mass model proposes, the 6-DOF rollout (exact in still air) decides; nose pointed at the axis in the last 1.8 km",
+    dt: 0.05, dtRollout: 0.05, epoch: 30, rolloutsPerEpoch: 4, planCost: 6.0,
+    reach: "≈ 0.5 km across the track, almost nothing along it (drag-dominated); polishes to 1–15 m at flip completion when the hand-over is inside that reach (measured)",
+  },
+  {
+    phase: "flip", method: "fixed manoeuvre (flip-and-stop on two engines), ignited when its stop point reaches the axis, inside ± 300 m of the gate altitude",
+    dt: 0.01, dtRollout: 0.01, epoch: 0, rolloutsPerEpoch: 0, planCost: 0,
+    reach: "± 90 m along the track through the ignition timing; carries 545–589 m along the nose, ≤ 28 m across (measured over 9 flights)",
+  },
+  {
+    phase: "landing", method: "feedback law on the verified pin-chain model (pole placement), hoverslam profile; the plan is the same law integrated forward at 5 Hz",
+    dt: 0.01, dtRollout: 0, epoch: 0.2, rolloutsPerEpoch: 0, planCost: 0.2,
+    reach: "60 m and 5 m/s in any direction from 1300 m: caught at ≤ 0.7 m, overshoot ≤ 0.22 m (12 of 12 rig cases); ≈ 150 m still caught in a mission, 160 m lost",
+  },
+  {
+    phase: "terminal", method: "the same law at the contact step; arms close when the aft end is below the rail tops",
+    dt: 0.004, dtRollout: 0, epoch: 0, rolloutsPerEpoch: 0, planCost: 0,
+    reach: "the pin overlap on the closed rails (0.7 m)",
+  },
 ]
 
-/** relative cost of one planner evaluation per phase (measured wall time of a rollout, s) */
-export const PHASE_COST: Partial<Record<Phase, number>> = { bellyFlop: 0.35, flip: 0.25, landing: 0.05, terminal: 0.005 }
-
-export interface Allocation {
-  readonly phase: Phase
-  /** planner evaluations the budget buys for this phase */
-  readonly evals: number
-  /** seconds of wall clock it is expected to cost */
-  readonly cost: number
-  /** share of the budget */
-  readonly share: number
-}
-
-/**
- * Split a planner budget (seconds) over the phases in proportion to sensitivity² (a quadratic
- * loss makes a phase half as sensitive worth a quarter of the effort) and inversely to the cost of
- * an evaluation there, with a floor of one evaluation per listed phase. `terminal` has no plan
- * search (it is a feedback law at the control rate), so it is not allocated solver time — its
- * precision is its step size, which the simulation's `dtFor` already fixes.
- */
-export const allocateBudget = (totalSeconds: number, table: readonly PhasePrecision[] = PHASE_PRECISION): readonly Allocation[] => {
-  const rows = table.filter((p) => (PHASE_COST[p.phase] ?? 0) > 0).map((p) => {
-    const w = p.sensitivity * p.sensitivity * p.tier
-    return { p, w, cost: PHASE_COST[p.phase] ?? 0.1 }
-  })
-  const wsum = rows.reduce((s, r) => s + r.w, 0)
-  let used = 0
-  const out: Allocation[] = rows.map((r) => {
-    const secs = Math.max(0, (totalSeconds * r.w) / wsum)
-    const evals = Math.max(1, Math.floor(secs / r.cost))
-    used += evals * r.cost
-    return { phase: r.p.phase, evals, cost: evals * r.cost, share: r.w / wsum }
-  })
-  // if rounding left budget unused, give it to the most sensitive phase
-  const rest = Math.max(0, totalSeconds - used)
-  if (rest > 0 && out.length > 0) {
-    const i = out.reduce((best, a, k) => (a.share > out[best].share ? k : best), 0)
-    const extra = Math.floor(rest / (PHASE_COST[out[i].phase] ?? 0.1))
-    out[i] = { ...out[i], evals: out[i].evals + extra, cost: out[i].cost + extra * (PHASE_COST[out[i].phase] ?? 0.1) }
-  }
-  return out
-}
-
-/** the precision entry of a phase (tier 0 for the unlisted coast phases) */
-export const precisionOf = (phase: Phase, table: readonly PhasePrecision[] = PHASE_PRECISION): PhasePrecision =>
-  table.find((p) => p.phase === phase) ?? { phase, sensitivity: 0, tier: 0, epoch: 60, dtMax: 0.1, rollouts: 0, sensitivitySource: "estimate" as const }
-
-/**
- * A phase's score from its geometry: how well it did its job, 0 (bad) to 1 (exact), plus the terms
- * that made it. This is what the phase log reports per phase so the next iteration refines the
- * phases that are actually weak instead of the ones that are merely long.
- */
-export interface PhaseScore {
-  readonly phase: Phase
-  /** largest |lateral| error at the end of the phase (m) */
-  readonly endError: number
-  /** largest lateral error anywhere in the phase (m) */
-  readonly maxError: number
-  /** 0..1: exp(−endError/scale) with the scale the phase can be expected to correct */
-  readonly score: number
-  /** fraction of samples with a control at its stop (gimbal ≥ 95 % of travel) */
-  readonly satGimbal: number
-  readonly satThrottle: number
-  /** rise time and overshoot of the phase's own error trace (m, m) */
-  readonly overshoot: number
-}
+/** the precision entry of a phase (undefined for the coast and entry phases, which are not planned by rollout) */
+export const precisionOf = (phase: Phase): PhasePrecision | undefined => PHASE_PRECISION.find((p) => p.phase === phase)

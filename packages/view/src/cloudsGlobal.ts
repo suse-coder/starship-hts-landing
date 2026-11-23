@@ -16,12 +16,20 @@ import * as THREE from "three"
  *    day side, and a nearly black night side so the Black Marble city lights read through clear gaps;
  *  - a shallow forward-scattering lobe and a soft luminance knee, so sunlit tops stay white without
  *    blooming and the limb does not look like a decal;
+ *  - relief shading: the mask is sampled a second time a few kilometres towards the Sun (longer at
+ *    a low Sun, like a real shadow); where the cloud is thicker sunward this column is shaded,
+ *    where it is thinner its flank is lit, which gives the deck its embossed, three-dimensional
+ *    look from orbit and long shadows along the terminator;
  *  - a circular "local hole" that can be faded in around the pad frame: the volumetric deck takes
- *    over there during the hand-off, and the global layer only shows the distant clouds beyond it.
+ *    over there during the hand-off, and the global layer only shows the distant clouds beyond it;
+ *  - an analytic occlusion test against the solid Earth: under the shell the visible faces are the
+ *    far ones, and a ray that enters the ground must not show the cloud of the antipodes (the local
+ *    ground planes write no depth).
  *
- * The shell is five texture taps per fragment (three mask taps for the soft edge and two fractal
- * detail taps), no raymarch, and no additional render target: a fraction of the cost of the local
- * deck.
+ * The shell is six texture taps per fragment (three mask taps for the soft edge, one for the relief
+ * and two fractal detail taps), no raymarch, and no additional render target: a fraction of the cost
+ * of the local deck. The atmosphere shell (env.ts) is drawn after it and lays the aerial perspective
+ * over the cloud tops.
  */
 
 export interface GlobalCloudFrame {
@@ -100,13 +108,22 @@ export const loadCloudMask = (url: string): THREE.Texture => {
   return tex
 }
 
+const UP = new THREE.Vector3(0, 1, 0)
+
 const VERT = /* glsl */ `
   #include <common>
   #include <logdepthbuf_pars_vertex>
+  uniform vec3 uSun;
   varying vec2 vUv;
   varying vec3 vW;
+  varying vec3 vNl;
+  varying vec3 vSunL;
   void main(){
     vUv = uv;
+    // unit-sphere geometry: the position is the outward normal in the shell's own (map) axes; the
+    // Sun direction is brought into the same axes (the model matrix is a rotation × uniform scale)
+    vNl = position;
+    vSunL = normalize(transpose(mat3(modelMatrix)) * uSun);
     vec4 w = modelMatrix * vec4(position, 1.0);
     vW = w.xyz;
     gl_Position = projectionMatrix * viewMatrix * w;
@@ -119,9 +136,11 @@ const FRAG = /* glsl */ `
   uniform sampler2D uMask, uDetail;
   uniform vec3 uSun, uSunColor, uSkyColor, uCentre, uHoleDir;
   uniform vec2 uDrift;
-  uniform float uOpacity, uHoleRadius, uHoleAmount, uEclipse, uTime;
+  uniform float uOpacity, uHoleRadius, uHoleAmount, uEclipse, uTime, uEarthR;
   varying vec2 vUv;
   varying vec3 vW;
+  varying vec3 vNl;
+  varying vec3 vSunL;
 
   // soft cloud mask: the source is a grayscale density map; two thresholds give a soft edge and
   // keep the thin wisps from disappearing at grazing angles
@@ -133,6 +152,13 @@ const FRAG = /* glsl */ `
     #include <logdepthbuf_fragment>
     vec3 N = normalize(vW - uCentre);
     vec3 V = normalize(cameraPosition - vW);
+    // solid-Earth occlusion: first intersection of the view ray with the sphere of radius uEarthR
+    vec3 oc = cameraPosition - uCentre;
+    float ob = -dot(oc, V), od = ob * ob - (dot(oc, oc) - uEarthR * uEarthR);
+    if (od > 0.0) {
+      float tE = -ob - sqrt(od);
+      if (tE > 0.0 && tE < distance(vW, cameraPosition)) discard;
+    }
     // the map is equirectangular: longitude wraps, latitude clamps (no seam at the poles)
     vec2 uv = vec2(fract(vUv.x + uDrift.x), clamp(vUv.y + uDrift.y, 0.001, 0.999));
     // the 10 km cloud composite magnifies to coarse blocks at ISS range; a fractal detail map
@@ -145,6 +171,16 @@ const FRAG = /* glsl */ `
     float mEdge2 = cloudMask(uv + warp - vec2(0.0007, 0.0));
     m = m * 0.6 + max(m, max(mEdge, mEdge2)) * 0.4; // conservative edge: no hard texture stair-steps
     float grain = d1 * 0.65 + d2 * 0.35;
+    // relief: second mask tap towards the Sun. East / north tangents of the map at this point,
+    // offset = 1.2 mrad of arc (≈ 7.6 km, about one texel of the 4096 map) × tan(zenith) in 0.5 … 3
+    vec3 Nl = normalize(vNl);
+    vec3 eastL = normalize(vec3(Nl.z, 0.0, -Nl.x) + vec3(1e-6, 0.0, 0.0));
+    vec3 northL = cross(Nl, eastL);
+    vec2 st = vec2(dot(vSunL, eastL), dot(vSunL, northL));
+    float sl = max(length(st), 1e-4);
+    float reach = 1.2e-3 * clamp(sl / max(dot(Nl, vSunL), 0.2), 0.5, 3.0);
+    vec2 dUv = (st / sl) * reach * vec2(0.159155 / max(sqrt(max(1.0 - Nl.y * Nl.y, 0.0)), 0.05), 0.318310);
+    float relief = clamp((m - cloudMask(uv + warp + dUv)) * 2.2, -1.0, 1.0);
     float a = smoothstep(0.13, 0.62, m);
     // the thin tail of the distribution gives cirrus-like translucency
     float thin = smoothstep(0.05, 0.30, m);
@@ -170,7 +206,7 @@ const FRAG = /* glsl */ `
 
     // lit cloud: sun on a horizontal sheet plus the sky's multiple scattering. The night side keeps
     // only a trace of airglow so it reads as cloud cover, not as another black sky.
-    vec3 lit = uSunColor * tint * (0.32 + 0.62 * pow(sunUp, 0.75));
+    vec3 lit = uSunColor * tint * (0.32 + 0.62 * pow(sunUp, 0.75)) * (1.0 + 0.30 * relief);
     vec3 amb = uSkyColor * (0.24 + 0.76 * day) * 0.55;
     vec3 col = lit * day + amb;
     // shaded undersides / bases: cooler and a little darker where the sheet is optically thick;
@@ -218,6 +254,7 @@ export const makeGlobalClouds = (opts: GlobalCloudOptions): GlobalClouds => {
     uHoleAmount: { value: 0 },
     uEclipse: { value: 1 },
     uTime: { value: 0 },
+    uEarthR: { value: opts.radius },
   }
   const mat = new THREE.ShaderMaterial({
     uniforms,
@@ -252,7 +289,7 @@ export const makeGlobalClouds = (opts: GlobalCloudOptions): GlobalClouds => {
     // one map width per ~9 hours at 5 m/s: the global field is extremely slow; the local deck
     // carries the fast evolution
     uniforms.uDrift.value.set((f.wind[0] * f.time) / (2 * Math.PI * 6371e3), -(f.wind[1] * f.time) / (2 * Math.PI * 6371e3))
-    uniforms.uHoleDir.value.copy(f.holeDir ?? new THREE.Vector3(0, 1, 0)).normalize()
+    uniforms.uHoleDir.value.copy(f.holeDir ?? UP).normalize()
     uniforms.uHoleRadius.value = f.holeRadius ?? 0
     uniforms.uHoleAmount.value = Math.max(0, Math.min(1, f.holeAmount ?? 0))
     // outside the shell front faces are visible; under it (ground, low altitude) back faces are

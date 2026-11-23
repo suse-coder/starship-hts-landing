@@ -40,19 +40,21 @@ faked `caught`.
 
 ## Current status at a glance
 
-| Item | State (2026-11-22) |
+| Item | State (2026-11-23) |
 |---|---|
-| M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps, cold gas until the 200 m ring); windy case open |
-| Recorded no-wind mission (committed `recording.bin`) | **`caught`**: pins on the closed arms, offset **0.61 m**, 6.2 t of landing propellant left; no flaps, cold gas until the 200 m ring |
+| M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps; cold gas for attitude until the flip, then for roll only); windy case open |
+| Recorded no-wind mission (`recording.bin`) | **`caught`**: flip-and-stop complete **1205 m** above the rails, 10 m off; at **1 km** the pins are **2.5 m** from the axis at 0.5 m/s lateral; then a vertical fall and a hoverslam — the pins touch the closed rails at ≈ 0.7 m/s, offset **0.03 m**, 0.5 s below 2 m/s, never climbing; engine cut on pin contact (thrust gone 0.44 s later), the ship then sags 4.7 cm on the rails, slides 1 cm and the locked arms do not move; **5.0 t** of the 26 t landing propellant left |
 | Windy design (default wind scale) | `lost`: delivery ≈ 550–700 m off, descent runs out of propellant ≈ 5 m above the rails |
-| Delivery method | belly plan chosen by 6-DOF rollouts to the flip-complete state (defect-corrected aim), then a single-engine velocity-field descent |
+| Delivery method | bank-plan aim corrected by verified 6-DOF rollouts → belly-flop plan by defect correction (fast model proposes, rollout decides) → nose pointed at the axis → flip ignited when its stop point reaches the axis → two-engine flip-and-stop → single-engine descent law on the verified pin-chain model. **Tuned point, not yet robust:** of 12 neighbouring tunings of the entry aim and gate, 5 delivered inside the belly flop's reach |
 | TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
 | T‑mc (20-run wind/κ/B/mass ensemble) | **not run** |
-| Model verification (`packages/verify`) | isolated landing rig + plant identification: the gimbal pitch authority matches the analytic `T·L/I` within **2 %**, the catch pins sit at the hull centre of percussion (12.6 m vs 12.8 m), the throttle slews at 0.60 /s and reaches 90 % in 0.74 s. The reworked no-hover descent law (not flown yet) measured on the rig from 1 km: caught, **0.00 m** offset, contact 0.35 m/s, 2.1 s below 2 m/s |
-| Per-phase flight log | `docs/03-spec/flight/nowind/flight.md` (+ `spline.json`): every phase with its 10 spline knots and the flown geometry table (pins, velocity, tilt, gimbal, command, plan), written to be read, not replayed |
+| Model verification (`packages/verify`) | isolated landing rig on the 6-DOF plant: thrust and gimbal authority match `T/m` and `T·L/I` within **2 %** for one and two engines; the guidance's tail-first aero database equals the plant's (moment 2.8 MN·m at 10°, 90 m/s — 65 % of the gimbal's holding torque at the floor); descent capture set: **12 of 12** cases (60 m / 5 m/s in any direction from 1300 m) caught at ≤ 0.5 m with ≤ 0.25 m of overshoot |
+| Per-phase flight log | `docs/03-spec/flight/nowind/flight.md` (+ `spline.json`): per phase, spline knots and the flown geometry against the guidance's frozen reference. Plan vs flown: belly flop RMS 54 m (max 187 m), powered descent RMS 6.3 m (max 10.9 m, vertical; lateral ≈ 1 m) |
 | Typecheck | clean (`bun run typecheck`) |
-| Tests | 324 pass, 2 todo, 0 fail across 30 files (`bun test packages`) |
-| Full mission cost | ≈ 22–28 s wall for the whole 2900 s mission including 20 onboard prediction rollouts |
+| MPC diagrams tab | second tab beside `Flight15_Ship42`: 14 x–y panels (pins E/N/U, speeds, tilt, roll, thrust, per-engine throttle and gimbal, ground track, side profile) with plan, flown, command, the recoverable band and the hard limits; shared zoom/pan/brush, hover readout, playhead, click-to-seek. Logic unit-tested; **not yet checked in a browser** |
+| 3D view | tower rebuilt as a lattice mast with carriage tracks, carriage, truss chopsticks (36 m) and QD arm; physically based sky/sun/exposure, haze, water and ground, steel hull material. Typecheck/tests/build pass; **not yet seen on a GPU** |
+| Tests | 458 pass, 2 todo, 0 fail across 38 files (`bun test packages`) |
+| Full mission cost | 25–27 s wall for the whole 2 870 s mission on a quiet machine, including 36 onboard prediction rollouts (12.6 s of it) — the 30 s budget is met with ≈ 3 s to spare, not more |
 
 The numbers above come from the evidence logs named in the roadmap; they are measured or simulated
 values, not targets. The 3D view, the browser tree, the catch-tower contact model, the arm timing,
@@ -133,51 +135,70 @@ and starving the OpenCode server restarts it.
   and corrected by **onboard 6-DOF rollouts** (the vehicle model, forecast wind, no turbulence, no
   knowledge of future failures) to the flip-complete state; the post-flip descent is a velocity-field
   law whose sink is coupled to the time the lateral correction needs. After the flip the actuators are
-  the **sea-level Raptors** (one engine from flip completion) plus the cold-gas couples for roll only —
-  a deliberate deviation from "Raptors only", because one off-centre gimbal cannot hold roll.
-- **Catch hardware:** Mechazilla column, carriage, V-shaped chopstick arms (44 m long, inner faces
-  flared 2 m outward over their 2.8 m depth so the ship's aft section passes between them), rails and
-  pins with solid contact and Coulomb friction. A catch requires the arms to be closed and both pins
-  to settle on the rails.
-- **Known limit (terminal lateral authority):** one gimballed Raptor at the throttle floor gives
-  ≈ 1–2 m/s² of lateral acceleration in the last 30 m. A zero-effort-miss (ZEM/ZEV) descent law was
-  implemented and measured: it keeps the along-track motion (no stop-and-reverse) and closes 380 m to
-  ≈ 20 m, but it cannot finish inside that authority, so the flown law remains the position/velocity
-  law that closes the last metres. The belly plan's delivery (≈ 380–490 m at flip completion) is what
-  the terminal has to absorb; the flip also translates the ship by ≈ v_h·4.5 s after ignition, which
-  the point-mass belly model omits.
+  the **sea-level Raptors** (two for the flip-and-stop, one from its completion) plus the cold-gas
+  couples for roll only — a deliberate deviation from "Raptors only", because one off-centre gimbal
+  cannot hold roll.
+- **Catch hardware:** Mechazilla lattice mast, carriage on its tracks, two truss chopsticks (36 m,
+  SpaceX's stated arm length; inner faces flared outward below the rails so the ship's aft section
+  passes between them), rails and pins with solid contact and Coulomb friction. The arms close when
+  the ship's aft end is below the rail tops (≈ 37 m of pin height, ≈ 6 s before the pins arrive; the
+  drive needs 3 s) and are compliant while closing: they stop at the hull and yield to it. Once both
+  pins bear on the rails the drives lock — the pair neither tracks nor yields, it carries the ship.
+  The landing rails are stiff shock absorbers (12 MN/m per pin, critically damped: the caught ship
+  sags ≈ 5 cm) and the pins do not creep along them. A catch requires the arms to be closed and both
+  pins to settle on the rails; the engine is cut on pin contact.
+- **Known limits of the descent:** one gimballed Raptor at the throttle floor turns the hull at
+  ≈ 6°/s² and needs 1.3 s to swing its gimbal from stop to stop, and tail-first the hull is
+  statically unstable (the air's moment at 15° of tilt and 90 m/s is 96 % of the gimbal's holding
+  torque). The law therefore keeps the tilt at 5–6° and slews its lateral command at 0.32 m/s³: it
+  removes 60 m of offset over a 1300 m fall but only ≈ 8 m in the 6 s above the 1 km gate.
 
 ## Verification, per-phase precision and the flight log
 
 `packages/verify` is the model-verification package: it builds the landing state directly (the same
-6-DOF plant, tower and flight software, no wind, no entry) so a landing change can be attributed to
-the landing and not to what 2 900 s of entry handed it.
+6-DOF plant, tower and flight software; no wind, no entry), so a landing result can be attributed to
+the landing and not to what 2 800 s of entry handed it.
 
-- `bun scripts/verify-model.ts` — plant identification and step responses. Measured: one gimbal
-  turns the hull at **0.54 /s² at the throttle floor and 1.47 /s² at full thrust** (`T·L/I`), the
-  side force at the *catch pins* cancels there (pins 12.6 m ahead of the CG, centre of percussion
-  12.8 m) — the pin position is a clean chain of integrators, while the CG has a right-half-plane
-  zero at 0.74 rad/s. That zero is why the old terminal's lateral law (`ω_n` 0.8, `k_p` 0.25,
-  `k_d` 1.1) is *linearly unstable*: its closed loop `s⁴+1.6s³+0.64s²+0.70s+0.16` fails the Routh
-  test. The ±4 m terminal hunting was that instability, bounded only by the acceleration caps.
-- `scripts/flight-log.ts` — writes `docs/03-spec/flight/nowind/`: per phase, the guidance's plan and
-  the flown geometry as tables and spline knots (positions in the catch frame: E across the rails,
-  N along them, U above the rail plane). This is the input for refining a phase: it shows at a
-  glance whether a phase's control is exact or merely survivable.
-- `scripts/refine-phases.ts` (phase-aware search) and `packages/verify/src/precision.ts` — a compute
-  budget is split over phases in proportion to the measured sensitivity of the final catch to an
-  error introduced there (a quadratic loss), inverse to the cost of one evaluation there. The
-  terminal gets resolution, the coast does not. The landing value is measured on the rig (`refine-phases.ts --measure`: 0.8 m per m/s); the
-  flip/belly/terminal values are still estimates and the code says so (`sensitivitySource`).
-- Open item, measured: **the ship is not yet over the arms at 1 km.** In the flown no-wind run it
-  crosses 1 km during the belly flop, 566 m from the catch axis, and the flip completes at 363 m
-  with a 111 m delivery. Raising the flip gate so the flip completes at 1 050 m (the `flipComplete`
-  knob) makes the *belly plan* miss by 1 074 m at the new ignition point — the aim and the gate are
-  one problem, so the gate stays at the flown value until the belly aim is searched with the new
-  per-phase optimizer. A verified terminal that enters vertically into the arms (the no-hover
-  hoverslam in `slamCommand`, measured 0.00 m / 0.35 m/s on the rig) is implemented but **not flown
-  in the published recording**: its 4.5° tilt cap cannot absorb the 111 m delivery, so the flown
-  descent is still the velocity-field law.
+- `bun scripts/verify-model.ts` — plant identification, the tail-first aero check and the descent
+  capture set. Measured: one gimbal turns the hull at **0.54 /s² at the throttle floor and 1.47 /s²
+  at full thrust** (`T·L/I`, within 2 %); the *catch pins* sit at the hull's centre of percussion
+  (12.6 m ahead of the CG against 12.8 m), so a gimbal step moves the CG and not the pins — the pin
+  position is a clean chain of integrators, the CG has a right-half-plane zero at 0.74 rad/s. The
+  terminal law that this replaced closed its loop on the CG with gains above that zero; its
+  characteristic polynomial `s⁴+1.6s³+0.64s²+0.70s+0.16` fails the Routh test. The "overshoot over
+  the tower" was that instability, bounded only by the acceleration caps.
+- **What the descent law is now** (`slamCommand`, `packages/gnc/src/landingLaw.ts`): pole placement
+  on the pin chain (four equal real poles, no overshoot by construction), the aerodynamic side
+  force and moment of the tail-first hull cancelled from the model, a tilt limit from the gimbal's
+  holding torque against the destabilising aero moment, a slew limit on the lateral command, and a
+  hoverslam profile for the vertical channel (fall at the throttle floor, brake at 7.5 m/s²,
+  1.5 m/s² over the last metre, touching at the 0.7 m/s design contact speed).
+- **Adversarial findings of this round**, all measured and fixed: the two-engine identification
+  was silently run on one engine (the flight software staged during the test: a 17 % "model
+  error" that was the test); the flight log's plan-vs-flown figure compared the flown point with a
+  prediction re-made from that same point (it measured nothing — it now uses the frozen plan); the
+  belly-flop plan was drawn 112 m too low and its tail came from the last candidate tried, flown by
+  the retired law; the "precision budget" table carried estimated sensitivities that nothing used
+  (replaced by the table of what is actually flown, `precision.ts`).
+- `scripts/flight-log.ts` → `docs/03-spec/flight/nowind/`: per phase, plan and flown geometry as
+  tables and spline knots. `scripts/gate-check.ts` prints the state at the 1 km gate and the
+  budgets; `scripts/phase-profile.ts` the wall time per phase and the cost of the rollouts.
+- **What "over the arms at 1 km" costs, and what it does not yet give.** The ship cannot be over
+  the arms at 1 km while it is still belly-flopping (it drifts at 35 m/s and the flip throws it
+  another 560 m along its nose), so the flip is ignited ≈ 2.2 km up and brakes the horizontal speed
+  itself on two engines (lean back against the velocity until it is gone). Measured cost: 9 t for
+  the flip-and-stop and 11.8 t for the descent, leaving 5.0 t (the lower flip left 6.2 t). At 1 km
+  the pins are 2.5 m from the axis, not 0: the flip hands over 10 m off, and one engine at 0.5 m/s²
+  cannot remove that in the 6 s above the gate.
+- **Roll.** One off-centre gimballed engine has no roll authority (its roll torque is a by-product
+  of its yaw torque). Without gas a 10 m correction across the rails left 0.7°/s of roll, which
+  turned the pins 26° off the rails by touchdown: position 0.01 m, catch lost. The descent
+  therefore keeps the cold-gas roll couples on (pitch and yaw stay on the gimbal). This is a
+  deliberate deviation from "Raptors only inside the 200 m ring"; the alternative is a second
+  running engine, which cannot throttle below 1.5 g and so cannot fall into the arms.
+- **Not robust yet.** The hand-over from the high-α glide is sensitive: a change of metres in a
+  rolled-out prediction can flip a decision and move the belly-flop start by kilometres. The flown
+  tuning (entry aim 1500 m, gate 1550 m) catches; so did 5 of the 12 neighbouring points tried.
 
 ## Documentation
 

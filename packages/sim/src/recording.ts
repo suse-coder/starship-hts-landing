@@ -55,6 +55,22 @@ export const CHANNELS = [
   ["pinLoadMin", "minimum per-pin load", "N"], ["pinCount", "loaded pins", ""],
   ["bodyContact", "hull against tower structure", ""], ["hullBump", "swept hull impulse", ""],
   ["windE", "wind East", "m/s"], ["windN", "wind North", "m/s"],
+  // guidance plan vs flown, per degree of freedom (catch frame: E across the rails, N along them,
+  // U above the rail plane). `planOn` = 1 where the guidance holds a reference plan; the plan
+  // channels are that plan sampled at the current time (descent) or height (belly flop). The tube
+  // channels are the constraint band: the lateral error that is still recoverable from here, and
+  // the hard limits (fastest sink that can still be stopped, tower corridor half-width).
+  ["planOn", "reference plan active", ""],
+  ["planX", "plan: pins E", "m"], ["planY", "plan: pins N", "m"], ["planZ", "plan: pins U", "m"],
+  ["planVx", "plan: v E", "m/s"], ["planVy", "plan: v N", "m/s"], ["planVz", "plan: v U", "m/s"],
+  ["planAcc", "plan: thrust acceleration", "m/s²"], ["planTiltE", "plan: tilt E", "rad"], ["planTiltN", "plan: tilt N", "rad"],
+  ["tubeLat", "recoverable lateral error", "m"], ["tubeHard", "hard lateral limit (tower corridor)", "m"],
+  ["vzLimit", "hard sink limit (full-thrust stop)", "m/s"],
+  ["pinVx", "pin point v E", "m/s"], ["pinVy", "pin point v N", "m/s"],
+  ["tiltE", "thrust-line tilt E", "rad"], ["tiltN", "thrust-line tilt N", "rad"], ["rollAng", "pin-axis azimuth error", "rad"],
+  ["accT", "thrust acceleration", "m/s²"], ["accCmd", "commanded thrust acceleration", "m/s²"],
+  ["cmdTiltE", "commanded tilt E", "rad"], ["cmdTiltN", "commanded tilt N", "rad"],
+  ["thr1", "SL1 throttle", ""], ["thr2", "SL2 throttle", ""], ["thr3", "SL3 throttle", ""],
   ["predDR", "predicted downrange miss", "m"], ["predCR", "predicted crossrange miss", "m"], ["npcMhd", "predictor MHD drag scale", ""], ["bellyHdg", "belly-flop glide heading", "rad"], ["bellyMiss", "belly-flop predicted miss", "m"],
 ] as const
 

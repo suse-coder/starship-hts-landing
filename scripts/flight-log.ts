@@ -16,17 +16,6 @@ const OUT = arg("out") ?? "docs/03-spec/flight/nowind"
 const EVERY = Number(arg("every") ?? 0.2)
 const W = makeWorld({ ...FLIGHT_DESIGN, windScale: 0, turbulence: 0 })
 
-/** nearest point of a plan polyline to the flown pin position (catch frame) */
-const nearest = (p: { x: number; y: number; z: number }, path: readonly { x: number; y: number; z: number }[]): { x: number; y: number; z: number } | null => {
-  if (path.length === 0) return null
-  let best = path[0], bd = Infinity
-  for (const q of path) {
-    const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2 + (q.z - p.z) ** 2
-    if (d < bd) { bd = d; best = q }
-  }
-  return best
-}
-
 let s: SimState = initState(W)
 const phaseOf = (x: SimState): Phase => x.mem.phase
 const traces: PhaseTrace[] = []
@@ -55,9 +44,11 @@ while (!s.done) {
     const cu = xb.x * upE.x + xb.y * upE.y + xb.z * upE.z
     const k = r[CH.T1] > 1e3 ? 1 : r[CH.T2] > 1e3 ? 2 : 3
     const pin = { x: r[CH.pinX], y: r[CH.pinY], z: r[CH.pinZ] }
-    // the guidance's plan at this step (its predicted path to the catch), compared geometrically:
-    // the nearest point of that spline, so the deviation is a distance, not a phase lag
-    const plan = out.pred.length > 1 ? nearest(pin, out.pred.map((p) => ({ x: p.x, y: p.y, z: p.z - W.guide.armHeight }))) : null
+    // The guidance's reference at this step, from the recorded plan channels: in the powered
+    // descent the plan made at its start, sampled at this time (a frozen reference — comparing the
+    // flown point with a prediction that is re-made from that same point every 0.2 s, as an earlier
+    // version of this log did, measures nothing); in the belly flop the planned path at this height.
+    const plan = r[CH.planOn] > 0.5 ? { x: r[CH.planX], y: r[CH.planY], z: r[CH.planZ] } : null
     samples.push({
       t, pin, vel: { x: r[CH.ve], y: r[CH.vn], z: r[CH.vu] },
       tilt: (Math.acos(Math.max(-1, Math.min(1, cu))) * 180) / Math.PI, rollRate: (r[CH.wx] * 180) / Math.PI, attErr: r[CH.attErr],
@@ -76,7 +67,7 @@ mkdirSync(OUT, { recursive: true })
 const L: string[] = []
 L.push("# Flight log — no wind (Ship 42 / Flight 15)\n")
 L.push(`Full 6-DOF mission, no wind, no turbulence: \`bun scripts/flight-log.ts\`. ${traces.length} phases, ${(wall).toFixed(1)} s wall, outcome **${s.outcome}**.`)
-L.push(`Samples every ${EVERY} s (0.2 s below 200 m). Positions are the catch pins in the pad frame: **E** across the rails, **N** along them, **U** above the rail plane. \`plan\` is the guidance's own reference at that time (the single-engine descent plan) or the nearest point of its predicted spline.`)
+L.push(`Samples every ${EVERY} s (0.2 s below 200 m). Positions are the catch pins in the pad frame: **E** across the rails, **N** along them, **U** above the rail plane. \`plan\` is the guidance's own reference: in the powered descent the plan made at its start, sampled at the same time; in the belly flop the planned path at the same height.`)
 L.push(`Spline knots and every sample are in \`spline.json\`; the files are written to be read by a human or a model, not replayed.\n`)
 const sum: string[] = []
 for (const tr of traces) {

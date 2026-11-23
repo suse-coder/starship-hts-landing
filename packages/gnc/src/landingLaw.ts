@@ -73,7 +73,11 @@ export const LAND = {
    * Thrust: `FLIP_THRUST` while rotating up, `thrust` (× one engine's maximum, in total) while
    * braking. It ends below `endVh` m/s and `endTilt`° (or at `tMax` s).
    */
-  flip: { tilt0: 50, tiltPerV: 0, tiltMax: 50, endVh: 1e9, endTilt: 22, thrust: 1.2, tMax: 9, rollAlign: true },
+  // `stop`: flip-and-stop (see guidance): lean against the horizontal velocity with a_h = kV·v_h
+  // until it is below `endVh` and the thrust line is within `endUpright`° of the vertical.
+  flip: { tilt0: 50, tiltPerV: 0, tiltMax: 50, endVh: 2.0, endTilt: 22, thrust: 1.2, tMax: 20, rollAlign: true, stop: true, endUpright: 10, endRate: 6, sinkMin: 22, slew: 13, vFull: 20, vSoft: 8, lag: 0.8,
+    /** ignition timing on the stop point: distance the flip carries the ship along its nose (m), lead (s), half-width of the altitude window (m) */
+    carry: 560, carryLead: 0, window: 300 },
   /**
    * Hand-over from the burn set to the single final engine (see the field branch of
    * `guideLanding`): armed below `vMax` m/s (aerodynamic moment small) and `hMax` m; executed when
@@ -93,6 +97,17 @@ export const LAND = {
   keepOut: { xIn: 1e6, yMax: 8, zClear: 0 },
   /** hand over to the final-approach set as soon as the flip is complete (no two-engine brake) */
   stageAtStart: true,
+  /**
+   * Roll on the cold-gas couples while ONE engine runs. A single off-centre gimbal has no roll
+   * authority of its own: its roll torque is a by-product of its yaw torque (H = ω_x − κ·z·ω_z is
+   * conserved to first order), so nothing it does can remove a roll rate. Measured on the isolated
+   * rig without gas: a 10 m correction across the rails left 0.7°/s, which in the 28 s of the
+   * descent turned the pins 26° off the rails — position 0.01 m, catch lost. The couples (36 kN·m
+   * on I_xx 1.6e6 kg·m²: 1.3°/s²) hold the pin azimuth with a few kilograms of nitrogen. Pitch and
+   * yaw stay on the gimbal. (The alternative without gas is a second running engine, which cannot
+   * throttle below 1.5 g and therefore cannot fall into the arms.)
+   */
+  rollGas: true,
   /**
    * Hover gate of the throttleable set: its plan ends `h` metres above the rails at `v` m/s; from
    * there the ship is centred and lowered onto the arms (hold-until-centred). Centred means inside
@@ -196,6 +211,13 @@ export interface LandingInput {
    * floor delivers ≈ 1–2 m/s², far less than the commanded tilt implies.
    */
   readonly aLat?: number
+  /** velocity of the pin point (pad ENU, m/s): v_cg + ω × r_pin — the lateral loop is closed on the pins */
+  readonly velPin?: V3
+  /** thrust-line tilt from the vertical as east/north components (rad) and its rate (rad/s) */
+  readonly tilt?: { readonly e: number; readonly n: number }
+  readonly tiltRate?: { readonly e: number; readonly n: number }
+  /** aerodynamic tilt limit of the running engine (see `SlamEnv.aeroTilt`) */
+  readonly aeroTilt?: { readonly kM: number; readonly TLs: number }
 }
 
 export interface LandingLawState {
@@ -217,6 +239,10 @@ export interface LandingLawState {
   /** field law: last predicted path and its time to go at `planT` (refreshed at 5 Hz) */
   readonly path: readonly V3[]
   readonly tgoField: number
+  /** single-engine descent: the plan made at its start (the reference the flown path is compared with) */
+  readonly slam?: SlamPlan | null
+  /** slam: the lateral command of the previous step (m/s², E and N) and its time, for the slew limit */
+  readonly latPrev?: { readonly x: number; readonly y: number; readonly t: number } | null
 }
 
 export const LANDING_LAW_STATE0: LandingLawState = { plan: null, planT: -1e9, dob: null, level: 0, nEng: 0, fails: 0, backoffT: -1, staged: false, stageT: -1e9, gateT: null, path: [], tgoField: Infinity }
@@ -422,6 +448,265 @@ export const fieldPredict = (rel: V3, vel: V3, uNow: V3, e: FieldEnv, tMax = 70,
   return { path, t, reached: pz <= 0.05 }
 }
 
+/**
+ * Vertical descent on the single engine ("slam") — the law of the last kilometre, built on the
+ * plant model that `@ship/verify` measures on the 6-DOF simulation.
+ *
+ * Model. One gimballed Raptor turns the hull at θ̈ = b·δ, b = T·L/I (measured within 2 % of the
+ * formula). The catch pins sit at the hull's centre of percussion (I/(m·L) = 12.8 m ahead of the
+ * CG, pins at 12.6 m): the gimbal's side force and the rotation it starts cancel there, so the
+ * *pin* position is a clean chain of integrators, x″ = (T/m)·θ, while the CG has a right-half-plane
+ * zero at √b ≈ 0.74 rad/s. The lateral loop is therefore closed on the pin point (position and
+ * velocity of the pins, v_pin = v_cg + ω × r_pin).
+ *
+ * Lateral: pole placement. The attitude loop is θ̈ = ω²(θ_c − θ) − 2ζω·θ̇ (inertia-normalised
+ * torque command, so its bandwidth does not depend on the thrust) and the outer law is
+ * a = −k_p·x − k_d·v with θ_c = a/(T/m): the closed loop is s⁴ + 2ζω s³ + ω² s² + ω²k_d s + ω²k_p.
+ * Four equal real poles at −p:  ω = √6·p,  ζ = 2/√6,  k_d = 2p/3,  k_p = p²/6 — no overshoot by
+ * construction. (The law it replaces, ω_n 0.8 with k_p 0.25, k_d 1.1 on the CG, has the polynomial
+ * s⁴+1.6s³+0.64s²+0.70s+0.16, which fails the Routh test: its ±4 m "hunting" was that instability
+ * bounded by the acceleration caps.) Far from the axis the approach speed follows a
+ * constant-deceleration profile and the tilt is capped; the cap is tight below `hGate` (the entry
+ * into the arms is vertical) and wider above it (the residual of the flip is removed up there).
+ *
+ * Vertical: a hoverslam. The engine sits at its throttle floor (the ship falls) until the sink
+ * meets the braking profile v(h) = −√(v₁² + 2·a_D·(h − h_e)), then follows it at a_D and takes the
+ * last `hEnd` metre at a_e, arriving at the contact speed with the thrust near the weight. (The last
+ * segment was 2 m at 1 m/s²: the pins then crept onto the rails for 2.5 s with the engine burning
+ * beside the closed arms, which read as an engine left on after the catch.) It never
+ * brakes before the profile (that was the old law's hover: sink 45 → 0 at 90 m, then 16 s of creep).
+ */
+export const SLAM = {
+  /** pin-loop pole (rad/s) */
+  p: 0.8,
+  /** lateral command cap (m/s²) and deceleration of the far-approach speed profile (m/s²) */
+  aSat: 1.3, aBrake: 0.3,
+  /**
+   * Slew limit of the lateral command (m/s³). The one gimbal turns the hull at ≈ 6°/s² and needs
+   * 1.3 s to swing from stop to stop; a step in the commanded tilt saturates it, and a saturated
+   * gimbal pushes the hull sideways with its whole side force (measured: a 10 m offset was flown
+   * to −18 m). The command therefore moves no faster than the hull can follow (≈ 2.5°/s of tilt).
+   */
+  jerk: 0.32,
+  /** lead of the approach-speed profile along the closing motion (s) */
+  latLead: 1.5,
+  /** tilt caps (deg): below / above the gate height `hGate` (m above the rails) */
+  tilt: 5, tiltHigh: 6, hGate: 1000, aeroShare: 0.3,
+  /** braking deceleration (m/s², net), deceleration and height of the last metres, vertical gain (1/s) */
+  aD: 7.5, aEnd: 1.5, hEnd: 1.0, kz: 1.5,
+  /** throttle lead (s): the profile is read this far ahead (the throttle slews 60 %/s) */
+  lead: 0.35,
+} as const
+
+/** gains of the pin-position loop: outer gains and the attitude loop that places four poles at −p */
+export const pinLoop = (p: number = SLAM.p): { p: number; kp: number; kd: number; wn: number; zeta: number } =>
+  ({ p, kp: (p * p) / 6, kd: (2 * p) / 3, wn: Math.sqrt(6) * p, zeta: 2 / Math.sqrt(6) })
+
+/** braking profile: sink speed (m/s, negative) and its deceleration at a pin height above the rails */
+export const slamProfile = (h: number, vc: number): { v: number; a: number } => {
+  const hh = Math.max(h, 0)
+  if (hh <= SLAM.hEnd) return { v: -Math.sqrt(vc * vc + 2 * SLAM.aEnd * hh), a: SLAM.aEnd }
+  const v1sq = vc * vc + 2 * SLAM.aEnd * SLAM.hEnd
+  return { v: -Math.sqrt(v1sq + 2 * SLAM.aD * (hh - SLAM.hEnd)), a: SLAM.aD }
+}
+
+export interface SlamEnv {
+  /** known non-thrust vertical acceleration without gravity (aero + observed residual), m/s² */
+  readonly ez: number
+  /**
+   * Known non-thrust lateral acceleration (aero model + observed residual, m/s²). It is cancelled
+   * by the command: the pin loop has no integrator, so an uncompensated side force a_d leaves a
+   * standing offset a_d/k_p — measured 0.6 m at the brake onset for a ship started on the axis
+   * (the hull flies 3° to the airflow on its off-centre engine: ≈ 0.2 m/s² at 80 m/s).
+   */
+  readonly ex?: number
+  readonly ey?: number
+  /**
+   * Aerodynamic tilt limit. Tail-first the hull is statically unstable: the air's moment grows
+   * with the tilt and with V² (model and plant agree: 2.8 MN·m at 10° and 90 m/s) and the one
+   * gimbal has T·L·sin δ to hold it (4.6 MN·m at the throttle floor). `kM`: moment per radian of
+   * tilt per (m/s)² (N·m); `TLs`: gimbal torque per unit of thrust acceleration (N·m per m/s²).
+   * The tilt the law may command keeps the held moment below `SLAM.aeroShare` of the authority.
+   */
+  readonly aeroTilt?: { readonly kM: number; readonly TLs: number }
+  /** thrust-acceleration band of the running engine (m/s²) */
+  readonly lo: number
+  readonly hi: number
+  readonly contactSpeed: number
+  /**
+   * Prediction only: vertical drag coefficient k of the hull, a_z = k·v_z² (m⁻¹). The flight
+   * passes the drag it measures now (`ez`); a plan that holds that value for the whole fall is
+   * wrong by the drag's growth with the square of the speed (measured: the plan reached the
+   * braking point 33 m and 1 s before the flight).
+   */
+  readonly dragK?: number
+}
+
+/** lateral tilt cap (rad) at a pin height: tight below the gate, wider above it, blended over 150 m */
+export const slamTiltCap = (h: number): number => {
+  const w = clamp((h - SLAM.hGate) / 150, 0, 1)
+  return ((SLAM.tilt + (SLAM.tiltHigh - SLAM.tilt) * w) * Math.PI) / 180
+}
+
+/**
+ * Slam command: `rel` pins relative to the catch point, `vPin` velocity of the pin point (lateral
+ * channels), `vz` vertical speed. Returns the thrust acceleration (ENU) and whether the brake is on.
+ */
+export const slamCommand = (rel: V3, vPin: V3, vz: number, e: SlamEnv): { u: V3; braking: boolean } => {
+  // ---- vertical: fall at the floor until the profile, then follow it
+  const ref = slamProfile(rel.z + vz * SLAM.lead, e.contactSpeed)
+  // One continuous law: the profile's deceleration fed forward in proportion to the sink actually
+  // flown (d v_ref/dt = a_ref·v_z/v_ref) plus the velocity error. Far above the profile the error
+  // term is so negative that the clamp holds the throttle floor — the fall; within ≈ 7 m/s of the
+  // curve the thrust comes up smoothly onto it. (A switch — floor until the curve, tracking after —
+  // was flown first: on the curve it chattered between the two commands at the control rate.)
+  //
+  // The feed-forward is the deceleration the *flown* state still needs to meet the segment's end
+  // speed, (v_z² − v_end²)/(2·Δh) — on the profile that is exactly a_ref. Feeding a_ref·v_z/v_ref
+  // forward instead has a standing error: a ship slower than the profile settles at
+  // v = v_ref²/(k_z/a + v_ref)·…, measured as a touchdown at 0.32 m/s instead of 0.7 and 2.8 s spent
+  // on the last 1.6 m with the engine burning between the closed arms.
+  const hh = Math.max(rel.z, 0)
+  const vEndSq = hh > SLAM.hEnd ? e.contactSpeed * e.contactSpeed + 2 * SLAM.aEnd * SLAM.hEnd : e.contactSpeed * e.contactSpeed
+  const dh = Math.max(hh > SLAM.hEnd ? hh - SLAM.hEnd : hh, 0.05)
+  const need = clamp((vz * vz - vEndSq) / (2 * dh), -1.5, 1.3 * ref.a)
+  const uz = clamp(G_DESCENT + need + SLAM.kz * (ref.v - vz) - e.ez, e.lo, e.hi)
+  const braking = uz > 1.02 * e.lo
+  // ---- lateral: pole-placement law on the pin point; constant-deceleration approach when far
+  const g = pinLoop()
+  const d = Math.hypot(rel.x, rel.y)
+  const kv = g.kp / g.kd
+  const dl = SLAM.aBrake / (kv * kv)
+  const dx = d > 1e-9 ? rel.x / d : 0, dy = d > 1e-9 ? rel.y / d : 0
+  // The approach speed is read `latLead` seconds ahead along the closing motion: turning the
+  // thrust from pushing to braking takes the slew limit and the attitude loop ≈ 2 s, and a ship
+  // that starts 10 m off is still accelerating when it enters the linear zone (measured: it
+  // crossed the axis by 4.6 m, three times). Near the axis the lead is extra damping.
+  const closing = Math.max(-(vPin.x * dx + vPin.y * dy), 0)
+  const dA = Math.max(d - SLAM.latLead * closing, 0)
+  const vd = dA <= dl ? kv * dA : Math.sqrt(2 * SLAM.aBrake * (dA - dl / 2))
+  let ax = g.kd * (-dx * vd - vPin.x), ay = g.kd * (-dy * vd - vPin.y)
+  const am = Math.hypot(ax, ay)
+  if (am > SLAM.aSat) { ax *= SLAM.aSat / am; ay *= SLAM.aSat / am }
+  // the thrust supplies the wanted lateral acceleration minus what the air already does …
+  let ux = ax - (e.ex ?? 0), uy = ay - (e.ey ?? 0)
+  // … inside the tilt the vehicle can hold: the schedule by height and the aerodynamic limit
+  let tiltCap = slamTiltCap(rel.z)
+  if (e.aeroTilt) tiltCap = Math.min(tiltCap, (SLAM.aeroShare * uz * e.aeroTilt.TLs) / Math.max(e.aeroTilt.kM * vz * vz, 1))
+  const um = Math.hypot(ux, uy), cap = uz * Math.tan(tiltCap)
+  if (um > cap) { ux *= cap / um; uy *= cap / um }
+  return { u: v3(ux, uy, uz), braking }
+}
+
+/** slew-limited step of the lateral command from (px, py) towards (tx, ty): `SLAM.jerk`, three times that when the command shrinks */
+export const slewLat = (px: number, py: number, tx: number, ty: number, dt: number): { x: number; y: number } => {
+  const dx = tx - px, dy = ty - py, d = Math.hypot(dx, dy)
+  const shrinking = Math.hypot(tx, ty) < Math.hypot(px, py)
+  const dMax = (shrinking ? 3 : 1) * SLAM.jerk * dt
+  const k = d > dMax ? dMax / d : 1
+  return { x: px + dx * k, y: py + dy * k }
+}
+
+export interface SlamPlan {
+  /** start time, step (s) and the samples: pins relative to the catch point (m), velocity (m/s), thrust acceleration (m/s²), tilt (rad, E and N) */
+  readonly t0: number
+  readonly dt: number
+  readonly x: Float64Array
+  readonly y: Float64Array
+  readonly z: Float64Array
+  readonly vx: Float64Array
+  readonly vy: Float64Array
+  readonly vz: Float64Array
+  readonly a: Float64Array
+  readonly tiltE: Float64Array
+  readonly tiltN: Float64Array
+  /** time to the rails (s) and the propellant the plan burns (kg) */
+  readonly tf: number
+  readonly fuel: number
+}
+
+export interface SlamState {
+  readonly rel: V3
+  readonly vPin: V3
+  readonly vz: number
+  readonly tilt: { readonly e: number; readonly n: number }
+  readonly tiltRate: { readonly e: number; readonly n: number }
+  /** thrust acceleration now (m/s²), mass (kg), exhaust velocity (m/s), p∞·A_e (N), throttle slew as acceleration (m/s³) */
+  readonly aNow: number
+  readonly mass: number
+  readonly ve: number
+  readonly pAe: number
+  readonly slew: number
+}
+
+/**
+ * The slam law integrated forward on the verified model — the *plan* of the descent: per lateral
+ * axis the pin chain x″ = a·θ with the attitude loop θ̈ = ω²(θ_c − θ) − 2ζω·θ̇, vertically the
+ * thrust acceleration slewing at the engine's throttle rate. The flight is compared with it.
+ */
+export const slamPredict = (t0: number, s0: SlamState, e: SlamEnv, tMax = 90, dt = 0.05): SlamPlan => {
+  const n = Math.ceil(tMax / dt) + 1
+  const X = new Float64Array(n), Y = new Float64Array(n), Z = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n), VZ = new Float64Array(n), A = new Float64Array(n), TE = new Float64Array(n), TN = new Float64Array(n)
+  let x = s0.rel.x, y = s0.rel.y, z = s0.rel.z, vx = s0.vPin.x, vy = s0.vPin.y, vz = s0.vz
+  let te = s0.tilt.e, tn = s0.tilt.n, we = s0.tiltRate.e, wn = s0.tiltRate.n
+  let a = s0.aNow, m = s0.mass, fuel = 0
+  // the slew limiter starts from the lateral acceleration flown, clipped to the tilt cap (as the flight's)
+  const cap0 = Math.max(s0.aNow, e.lo) * Math.tan(slamTiltCap(s0.rel.z))
+  const l0x = s0.aNow * Math.sin(s0.tilt.e), l0y = s0.aNow * Math.sin(s0.tilt.n), l0 = Math.hypot(l0x, l0y), k0 = l0 > cap0 ? cap0 / l0 : 1
+  let lx = l0x * k0, ly = l0y * k0
+  const g = pinLoop()
+  let k = 0
+  for (; k < n; k++) {
+    X[k] = x; Y[k] = y; Z[k] = Math.max(z, 0); VX[k] = vx; VY[k] = vy; VZ[k] = vz; A[k] = a; TE[k] = te; TN[k] = tn
+    if (z <= 0) { k++; break }
+    const ezNow = e.dragK !== undefined ? e.ez + e.dragK * (vz * vz - s0.vz * s0.vz) : e.ez
+    const c0 = slamCommand(v3(x, y, z), v3(vx, vy, 0), vz, e.dragK !== undefined ? { ...e, ez: ezNow } : e)
+    const sl = slewLat(lx, ly, c0.u.x, c0.u.y, dt)
+    lx = sl.x; ly = sl.y
+    const c = { u: v3(lx, ly, c0.u.z) }
+    const cm = Math.hypot(c.u.x, c.u.y, c.u.z)
+    a = clamp(a + clamp(cm - a, -s0.slew * dt, s0.slew * dt), e.lo, e.hi)
+    const tce = Math.atan2(c.u.x, Math.max(c.u.z, 1)), tcn = Math.atan2(c.u.y, Math.max(c.u.z, 1))
+    we += (g.wn * g.wn * (tce - te) - 2 * g.zeta * g.wn * we) * dt
+    wn += (g.wn * g.wn * (tcn - tn) - 2 * g.zeta * g.wn * wn) * dt
+    te += we * dt; tn += wn * dt
+    const cz = Math.cos(Math.hypot(te, tn))
+    vx += (a * Math.sin(te) + (e.ex ?? 0)) * dt; vy += (a * Math.sin(tn) + (e.ey ?? 0)) * dt
+    vz += (a * cz + ezNow - G_DESCENT) * dt
+    x += vx * dt; y += vy * dt; z += vz * dt
+    const md = (m * a + s0.pAe) / s0.ve
+    fuel += md * dt; m -= md * dt
+  }
+  const cut = (f: Float64Array): Float64Array => f.slice(0, k)
+  return { t0, dt, x: cut(X), y: cut(Y), z: cut(Z), vx: cut(VX), vy: cut(VY), vz: cut(VZ), a: cut(A), tiltE: cut(TE), tiltN: cut(TN), tf: (k - 1) * dt, fuel }
+}
+
+/** sample a slam plan at an absolute time (clamped to its ends) */
+export const sampleSlam = (pl: SlamPlan, t: number): { x: number; y: number; z: number; vx: number; vy: number; vz: number; a: number; tiltE: number; tiltN: number } => {
+  const n = pl.x.length
+  const f = clamp((t - pl.t0) / pl.dt, 0, n - 1)
+  const i = Math.max(0, Math.min(Math.floor(f), n - 2)), w = n > 1 ? f - i : 0
+  const at = (q: Float64Array): number => (n > 1 ? q[i] + w * (q[i + 1] - q[i]) : q[0])
+  return { x: at(pl.x), y: at(pl.y), z: at(pl.z), vx: at(pl.vx), vy: at(pl.vy), vz: at(pl.vz), a: at(pl.a), tiltE: at(pl.tiltE), tiltN: at(pl.tiltN) }
+}
+
+/**
+ * Recoverable lateral error at a time to go (m) — the constraint band of the descent. A
+ * rest-to-rest move of the four-integrator pin chain under a snap bound s takes T = (512·d/s)^¼,
+ * so d(T) = s·T⁴/512; it is also bounded by what the capped lateral acceleration covers,
+ * a·T²/4. `margin` keeps half of the authority for disturbances, `end` is the tolerance at the
+ * rails (the pin overlap on the closed rails). The band narrows towards the arms because the time
+ * left to correct runs out.
+ */
+export const slamTube = (tgo: number, snap: number, aCap: number, end = 0.3, margin = 0.5): number => {
+  const T = Math.max(tgo, 0)
+  return end + margin * Math.min((snap * T ** 4) / 512, (aCap * T * T) / 4)
+}
+
+/** fastest sink (m/s, negative) at a pin height that full thrust can still stop at the rails */
+export const slamSinkLimit = (h: number, hi: number, vc: number): number =>
+  -Math.sqrt(vc * vc + 2 * Math.max(hi - G_DESCENT, 0.1) * Math.max(h, 0))
+
 export const guideLanding = (inp: LandingInput, prev: LandingLawState): LandingOutput => {
   const ev: string[] = []
   const { rel, vel, t } = inp
@@ -583,7 +868,48 @@ export const guideLanding = (inp: LandingInput, prev: LandingLawState): LandingO
   let tgo = Infinity, frozen = false, miss = 0
   // time until the pins reach the rails (for the arm-closing lead); Infinity while that is open
   let tRail = Infinity
-  if (field) {
+  let slam: SlamPlan | null = prev.slam ?? null
+  let latPrev = prev.latPrev ?? null
+  if (field && staged) {
+    // Single engine: the vertical descent law on the verified pin-chain model (see SLAM).
+    const vPin = inp.velPin ?? vel
+    const se: SlamEnv = {
+      ez: aeroNow.z + dob.d.z, ex: aeroNow.x + dob.d.x, ey: aeroNow.y + dob.d.y, lo, hi, contactSpeed: inp.contactSpeed, aeroTilt: inp.aeroTilt,
+      dragK: Math.abs(vel.z) > 5 ? Math.max(aeroNow.z, 0) / (vel.z * vel.z) : 0,
+    }
+    const c = slamCommand(rel, vPin, vel.z, se)
+    // slew-limited lateral command (see SLAM.jerk); the first step starts from the tilt flown
+    // It starts from the lateral acceleration actually flown, clipped to the tilt cap. (Starting
+    // from the unclipped value held the 15° lean the flip hands over for ten seconds and pushed
+    // the ship 76 m off the axis; starting from the command itself is a step for a ship that
+    // arrives upright and off the axis — the gimbal hit its stop and threw it 4 m past. Both
+    // measured.)
+    const capNow = c.u.z * Math.tan(slamTiltCap(rel.z))
+    const flown = Math.hypot(inp.uAxis.x, inp.uAxis.y), kf = flown > capNow ? capNow / flown : 1
+    const lp = prev.latPrev ?? { x: inp.uAxis.x * kf, y: inp.uAxis.y * kf, t: t - 0.01 }
+    const dtL = clamp(t - lp.t, 0, 0.1)
+    latPrev = { ...slewLat(lp.x, lp.y, c.u.x, c.u.y, dtL), t }
+    u = v3(latPrev.x, latPrev.y, c.u.z)
+    const st: SlamState = {
+      rel, vPin, vz: vel.z, tilt: inp.tilt ?? { e: 0, n: 0 }, tiltRate: inp.tiltRate ?? { e: 0, n: 0 },
+      aNow: clamp(norm(inp.uAxis), lo, hi), mass: inp.mass, ve: inp.ve, pAe: inp.pAe, slew: (0.6 * (inp.thrustMax + inp.pAe)) / inp.mass,
+    }
+    // the plan of the descent is made once, at its start, and kept: it is what the flown path is
+    // measured against. The displayed path and the time to the rails are re-predicted at 5 Hz.
+    if (!slam) {
+      slam = slamPredict(t, st, se)
+      ev.push(`descent plan (single engine, verified pin-chain model): ${slam.tf.toFixed(1)} s to the rails from ${where}, ${(slam.fuel / 1e3).toFixed(1)} t; falls at the throttle floor, brakes at ${SLAM.aD} m/s² from ${(slam.z[slam.vz.findIndex((v, i) => i > 20 && v > slam!.vz[i - 1] + 1e-6)] ?? 0).toFixed(0)} m`)
+    }
+    if (t - planT >= 0.2 || !prev.path || prev.path.length === 0) {
+      planT = t
+      const pr = slamPredict(t, st, se, 90, 0.1)
+      path = []
+      for (let i = 0; i < pr.x.length; i += 3) path.push(v3(pr.x[i], pr.y[i], pr.z[i]))
+      path.push(v3(pr.x[pr.x.length - 1], pr.y[pr.x.length - 1], pr.z[pr.x.length - 1]))
+      tgo = pr.tf
+    } else { path = prev.path as V3[]; tgo = prev.tgoField - (t - planT) }
+    tRail = Math.max(tgo, 0)
+  } else if (field) {
     // One law for the whole descent (`fieldCommand`), flown by whichever engine set is running.
     // The burn set (two Raptors, roll by differential gimbal) flies it while the ship is fast: the
     // hull's crossflow moment ∝ V² has to be held by the gimbals, and on ONE off-centre engine that
@@ -669,7 +995,7 @@ export const guideLanding = (inp: LandingInput, prev: LandingLawState): LandingO
     u = fitThrust(v3(-0.5 * vel.x, -0.5 * vel.y, G_DESCENT + clamp(need, 0, hi) - aeroNow.z - dob.d.z), lo, hi, Math.tan(30 * Math.PI / 180))
     path = [v3(rel.x, rel.y, Math.max(rel.z, 0))]
   }
-  return { u, uDot, state: { plan, planT, dob, level, nEng: nE(), fails, backoffT, staged, stageT, gateT, path: field ? path : [], tgoField: field ? tgo + (t - planT) : Infinity }, events: ev, path, tgo, tRail, frozen, miss, residual: dob.d }
+  return { u, uDot, state: { plan, planT, dob, level, nEng: nE(), fails, backoffT, staged, stageT, gateT, path: field ? path : [], tgoField: field ? tgo + (t - planT) : Infinity, slam, latPrev }, events: ev, path, tgo, tRail, frozen, miss, residual: dob.d }
 }
 
 /**

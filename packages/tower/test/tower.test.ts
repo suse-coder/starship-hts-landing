@@ -89,12 +89,12 @@ describe("pin contact on the rails", () => {
     }
   })
 
-  test("friction saturates at μ F_n when sliding fast and is smooth (viscous slope 4e5 N s/m) near zero slip", () => {
+  test("friction saturates at μ F_n when sliding fast and is smooth (viscous slope 3e6 N s/m) near zero slip", () => {
     const z = TOWER.armHeight - 0.2
     const fast = towerContact(closed, v3(0, 0, 0), pins(z, 0, 3, -3), [])
     expect(Math.hypot(fast.F.x, fast.F.y) / (TOWER.mu * fast.F.z)).toBeGreaterThan(0.9999)
     const slow = towerContact(closed, v3(0, 0, 0), pins(z, 0, 1e-4, 0), [])
-    expect(rel(slow.F.x / 2, -4e5 * 1e-4)).toBeLessThan(1e-6) // per pin: viscous slope at zero slip
+    expect(rel(slow.F.x / 2, -3e6 * 1e-4)).toBeLessThan(1e-6) // per pin: viscous slope at zero slip
     const halfway = towerContact(closed, v3(0, 0, 0), pins(z, 0, 0, 0.6), [])
     expect(Math.abs(halfway.F.y)).toBeLessThan(TOWER.mu * halfway.F.z)
   })
@@ -229,7 +229,7 @@ describe("solid tower envelope (view/tower.ts audit)", () => {
       { id: "carriage", p: v3(7.5, TOWER.pos.y, 120) },
       { id: "traverse-beams", p: v3(14, 14.2, 107) },
       { id: "arm-west", p: v3(xl - 0.8, TOWER.pos.y - 2 - TOWER.armLength + 1, TOWER.armHeight - 0.2) },
-      { id: "arm-west-5", p: v3(xl - 0.8, 0, TOWER.armHeight - 0.6) },
+      { id: "arm-west-4", p: v3(xl - 0.8, 0, TOWER.armHeight - 0.6) }, // 36 m arms: y = 0 is in the fourth of the slices along the arm
       { id: "arm-west-trolley", p: v3(-4, 13, 115) },
       { id: "ship-qd-arm", p: v3(-20, 15.6, 95) },
       { id: "launch-mount", p: v3(0, 0, 10) },
@@ -358,5 +358,28 @@ describe("caught ship support after engine cut", () => {
     expect(last.pinCount).toBe(2)
     expect(z).toBeCloseTo(TOWER.armHeight - delta, 2)
     expect(Math.abs(vz)).toBeLessThan(0.02)
+  })
+})
+
+describe("arms holding a caught ship", () => {
+  test("with the pins bearing the drives are locked: the pair neither tracks nor yields to the hull", () => {
+    let s = armsInit
+    for (let k = 0; k < 400; k++) s = armStep(s, true, 0.01, 0.4, { x: 0.4, r: 4.5 })
+    const open0 = s.open, cx0 = s.cx ?? 0
+    // the hull pushes 0.5 m sideways and the tracking command moves with it: a held pair stays put
+    for (let k = 0; k < 300; k++) s = armStep(s, true, 0.01, 0.9, { x: 0.9, r: 4.5 }, true)
+    expect(s.open).toBe(open0)
+    expect(s.cx).toBe(cx0)
+    // without the hold the compliant drive yields (that is the closing-stroke behaviour)
+    let y = s
+    for (let k = 0; k < 300; k++) y = armStep(y, true, 0.01, 0.9, { x: 0.9, r: 4.5 })
+    expect((y.cx ?? 0) !== cx0 || y.open !== open0).toBe(true)
+  })
+  test("the landing rails are stiff: a 120 t ship sags about 5 cm on the two pins", () => {
+    const sag = (120e3 * 9.81) / (2 * TOWER.kPin)
+    expect(sag).toBeGreaterThan(0.03)
+    expect(sag).toBeLessThan(0.07)
+    // critically damped (or slightly over) for half the mass on each pin
+    expect(TOWER.cPin / (2 * Math.sqrt(TOWER.kPin * 60e3))).toBeGreaterThan(0.9)
   })
 })

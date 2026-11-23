@@ -133,6 +133,7 @@
       "name": "@ship/verify",
       "version": "0.1.0",
       "dependencies": {
+        "@ship/aero": "workspace:*",
         "@ship/craft": "workspace:*",
         "@ship/earth": "workspace:*",
         "@ship/gnc": "workspace:*",

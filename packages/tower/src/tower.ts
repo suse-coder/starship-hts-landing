@@ -11,7 +11,14 @@ export const TOWER = {
   height: 146, // m
   pos: v3(0, 23, 0), // tower centre (north of the mount)
   armHeight: 112, // m, top of the arm rails
-  armLength: 44, // m along −y from the carriage
+  /**
+   * Arm length along −y from the carriage hinge. SpaceX's own description of the catch arms is
+   * 36 m (120 ft); the earlier 44 m was an estimate. The reference photo (Mechazilla, close-up of
+   * the carriage and the two chopsticks) also shows the arms as deep taper trusses hinged at a
+   * common pair of bosses on the carriage, with the capture line on the *top* rail — which is what
+   * the contact model below uses.
+   */
+  armLength: 36,
   armWidth: 1.6, // m
   /** depth of the arm truss at the carriage (root) and at the tip: the real chopsticks are a wedge */
   armRootDepth: 4.6,
@@ -42,13 +49,18 @@ export const TOWER = {
    * by about half the arm width — not a wide funnel.
    */
   armFlare: 1.8,
-  kPin: 2.4e6, // N/m per pin (shock absorber spring)
-  cPin: 9.0e5, // N s/m per pin
+  // Landing-rail shock absorbers, per pin. Stiff enough that the caught ship sags ≈ 5 cm on them
+  // (the softer 2.4 MN/m let the pins sink 23 cm into the rail tops — it read as the arms giving
+  // way under the load), critically damped for half the landing mass: c = 2·√(k·m/2).
+  kPin: 1.2e7, // N/m per pin
+  cPin: 1.7e6, // N s/m per pin
   mu: 0.35,
 } as const
 
 /** N s/m, slope of the regularised friction law at zero slip */
-const FRICTION_C = 4e5
+// (stiff enough that a pin under a steady side load creeps at millimetres per second: the pins
+// sit in the rails' cradles — at 4e5 the caught ship slid 7 cm along the rails in 3 s)
+const FRICTION_C = 3e6
 
 export interface ArmState {
   readonly open: number // 1 open … 0 closed
@@ -66,7 +78,12 @@ export const armsInit: ArmState = { open: 1, cmdClose: false, cx: 0 }
  * the pair's centre sideways at 3–4 m/s and it rattled between the arms (measured); the real arms
  * close until they bear on the hull.
  */
-export const armStep = (s: ArmState, cmdClose: boolean, dt: number, cxCmd = 0, hull?: { readonly x: number; readonly r: number }): ArmState => {
+export const armStep = (s: ArmState, cmdClose: boolean, dt: number, cxCmd = 0, hull?: { readonly x: number; readonly r: number }, hold = false): ArmState => {
+  // `hold`: the ship's pins are bearing on the rails. The drives are then locked — the pair neither
+  // tracks nor yields: the arms carry the ship and do not move under its load. (The compliance
+  // below is for the closing stroke only; a pair that kept "tracking" a ship it was already
+  // carrying would drag it along the traverse beams.)
+  if (hold && cmdClose) return { cmdClose, open: s.open, cx: s.cx ?? 0 }
   const tgt = clamp(cxCmd, -TOWER.armReach, TOWER.armReach)
   const cx0 = s.cx ?? 0
   const cx = cx0 + clamp(tgt - cx0, -TOWER.armTrackRate * dt, TOWER.armTrackRate * dt)
@@ -74,7 +91,12 @@ export const armStep = (s: ArmState, cmdClose: boolean, dt: number, cxCmd = 0, h
   if (hull && cmdClose) {
     const gapMin = 2 * (hull.r + Math.abs(hull.x - cx) + TOWER.armStandoff)
     const openMin = clamp((gapMin - TOWER.closedGap) / (TOWER.openGap - TOWER.closedGap), 0, 1)
-    // never closer than the hull allows; if the hull moved in, the arm yields at the closing rate
+    // The closing drive is compliant: it stops `armStandoff` short of the hull and yields (at the
+    // closing rate) when the hull moves into an arm. A drive that latches instead was tried —
+    // "close and never give way" — and measured: a ship 0.8 m off the pair's centre was struck at
+    // 3 m/s and thrown ±7 m between the closed arms until its propellant ran out. The arms stay
+    // shut on a ship that arrives centred because there is then nothing to yield to; they must
+    // not be made rigid.
     open = Math.max(open, Math.min(openMin, s.open + dt / TOWER.closeTime))
   }
   return { cmdClose, open, cx }

@@ -18,6 +18,9 @@ import { makeWindField } from "./fx"
 import { makeClouds } from "./clouds"
 import { makePathOverlay } from "./prediction"
 import { loadCloudDetail, loadCloudMask, makeGlobalClouds } from "./cloudsGlobal"
+import { ATM, aerialPerspective, exposureForSun, luminance, skyAmbient, skyRadiance, sunTransmittance } from "./atmosphere"
+import { fitShadow, makeShadowFit } from "./shadowFit"
+import { makeGovernor, msaaSamples, QUALITY_LEVELS } from "./quality"
 
 export type { TreeNode } from "./ship"
 export { glowColor, marginColor } from "./ship"
@@ -119,17 +122,28 @@ const makeViewCube = (cv: HTMLCanvasElement, onPick: (dir: THREE.Vector3) => voi
   }
 }
 
-/** colour of direct sunlight after Rayleigh extinction at air mass m (Kasten–Young air mass; τ_R ∝ λ⁻⁴·⁰⁵) */
-const sunTintRGB = (sinElev: number): THREE.Color => {
-  const h = Math.max(0.02, Math.asin(Math.max(-1, Math.min(1, sinElev))))
-  const m = 1 / (Math.sin(h) + 0.50572 * Math.pow((h * 180) / Math.PI + 6.07995, -1.6364))
-  const tau = (lambdaUm: number): number => 0.00865 * Math.pow(lambdaUm, -4.05)
-  return new THREE.Color(Math.exp(-tau(0.65) * m), Math.exp(-tau(0.55) * m), Math.exp(-tau(0.45) * m))
-}
+/**
+ * Radiometric scale of the direct Sun: DirectionalLight intensity above the atmosphere (scene units;
+ * the light's colour is the atmospheric transmittance at the vehicle, atmosphere.ts). A white
+ * Lambertian surface facing the Sun then has radiance E/π ≈ 1.1–1.4 near the ground, 4–6 × the mean
+ * sky radiance of the same atmosphere model — the ratio the cloud deck is calibrated to as well.
+ */
+const SUN_E = 4.6
+/** direct Sun on the cloud layers (clouds.ts calibration: sunlit faces ≈ 1.0–1.5 after its own gain) */
+const CLOUD_SUN_E = 3.0
+/** altitude of the cumulus deck, km (colour of the sunlight that reaches it) */
+const CLOUD_ALT_KM = 2.3
+/** elevation of the "horizon" sky samples reflected by the sea, sin/cos of 4° */
+const HOR_S = Math.sin((4 * Math.PI) / 180), HOR_C = Math.cos((4 * Math.PI) / 180)
 
 export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, cubeCanvas?: HTMLCanvasElement): View => {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  // The scene is rendered into the composer's HDR buffers (multisampled there, see applyQuality);
+  // the canvas itself only receives full-screen passes and needs no MSAA of its own.
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, logarithmicDepthBuffer: true })
+  const basePixelRatio = Math.min(window.devicePixelRatio, 2)
+  renderer.setPixelRatio(basePixelRatio)
+  // colour pipeline: linear scene-referred HDR (half float) → bloom → ACES filmic tone curve with
+  // the exposure of exposureForSun() → sRGB transfer, dithered to 8 bit (all in the OutputPass)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 0.6
   renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -165,44 +179,135 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
   })
   composer.addPass(sanitize)
   // bloom only for emitters (plasma, plumes, incandescent steel, the Sun disc): HDR threshold above lit surfaces
-  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.35, 0.3, 2.5)
+  // The threshold follows the Sun's radiometric scale (it was 2.5 for a Sun of 3.0): with the
+  // brighter Sun and the more metallic hull the steel's own highlights crossed the old threshold
+  // and the bloom laid a soft glow over the ship.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.35, 0.3, 2.5 * (SUN_E / 3.0) * 1.25)
   composer.addPass(bloom)
-  composer.addPass(new OutputPass())
+  const outputPass = new OutputPass()
+  try {
+    // ±1 LSB triangular dither after the sRGB transfer: the smooth sky and haze gradients would
+    // otherwise band in the 8-bit canvas. Interleaved gradient noise, fixed per pixel (no temporal noise).
+    const mat = (outputPass as unknown as { material: THREE.RawShaderMaterial }).material
+    const src = mat.fragmentShader
+    const patched = src.replace(/gl_FragColor = sRGBTransferOETF\( gl_FragColor \);\s*#endif/, (m) => `${m}
+			float dn1 = fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
+			float dn2 = fract( 52.9829189 * fract( dot( gl_FragCoord.xy + vec2( 47.0, 17.0 ), vec2( 0.06711056, 0.00583715 ) ) ) );
+			gl_FragColor.rgb += ( dn1 - dn2 ) / 255.0;`)
+    if (patched !== src) { mat.fragmentShader = patched; mat.needsUpdate = true } else console.warn("[view] output dither not applied: OutputShader layout changed")
+  } catch (e) {
+    console.warn("[view] output dither not applied", e)
+  }
+  composer.addPass(outputPass)
   // light: Sun (shadows near the ship) + sky fill
-  const sun = new THREE.DirectionalLight(0xfff4e0, 3.0)
+  const sun = new THREE.DirectionalLight(0xffffff, SUN_E)
   sun.castShadow = true
-  sun.shadow.mapSize.set(2048, 2048)
-  const sc = sun.shadow.camera
-  sc.left = -120; sc.right = 120; sc.top = 120; sc.bottom = -120; sc.near = 1; sc.far = 2000
-  sun.shadow.bias = -0.0002
-  sun.shadow.normalBias = 0.06
+  // one fitted shadow map: frustum, bias and filter radius are set per frame by fitShadow (stable,
+  // texel-snapped to the pad frame); the size comes from the quality level
+  let quality = QUALITY_LEVELS[0]
+  sun.shadow.mapSize.set(quality.shadowMap, quality.shadowMap)
+  const shadowFit = makeShadowFit()
+  let shadowHalf = -1
+  const HEMI_SKY = new THREE.Color(0xbcd7ff), STUDIO_SUN = new THREE.Color(0xfff4e0)
   const hemi = new THREE.HemisphereLight(0xbcd7ff, 0x5a5040, 0.25)
   scene.add(sun, sun.target, hemi)
+  // aerial perspective of solid objects (ship, tower, site): exponential-squared scene fog whose
+  // colour and density are fitted every frame to the atmosphere model along the camera → pad (or
+  // camera → ship) path. Density 0 = off (studio, globe); the object stays set so that no material
+  // is recompiled when it switches.
+  const fog = new THREE.FogExp2(0x000000, 0)
+  scene.fog = fog
+  // ---- quality: one level drives the resolution scale, MSAA, cloud steps, shadow map and PMREM size
+  const governor = makeGovernor()
+  const bufSize = new THREE.Vector2()
+  // Only the buffer the scene is rasterised into is multisampled. The RenderPass draws into the
+  // composer's read buffer; the one swapping pass (sanitize) would make that alternate between the
+  // two targets from frame to frame, so render() swaps them back first: one MSAA buffer, one resolve.
+  const sceneTarget = composer.readBuffer
+  let msaaWarned = false
+  const applyQuality = (): void => {
+    const pr = basePixelRatio * quality.pixelRatioScale
+    if (Math.abs(renderer.getPixelRatio() - pr) > 1e-3) { renderer.setPixelRatio(pr); composer.setPixelRatio(pr) }
+    try {
+      renderer.getDrawingBufferSize(bufSize)
+      const samples = Math.min(msaaSamples(bufSize.x * bufSize.y, quality.msaa), renderer.capabilities.maxSamples)
+      if (sceneTarget.samples !== samples) { sceneTarget.samples = samples; sceneTarget.dispose() }
+    } catch (e) {
+      if (!msaaWarned) { msaaWarned = true; console.warn("[view] MSAA not applied", e) }
+    }
+    if (sun.shadow.mapSize.x !== quality.shadowMap) {
+      sun.shadow.mapSize.set(quality.shadowMap, quality.shadowMap)
+      sun.shadow.map?.dispose()
+      sun.shadow.map = null
+      shadowHalf = -1
+    }
+  }
   // image-based lighting: PBR steel needs an environment to reflect. Physical mode captures the
   // same single-scattering sky (+ a ground/Earth hemisphere) into a PMREM cube; studio: a soft room.
   const pmrem = new THREE.PMREMGenerator(renderer)
   const roomEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
   const envScene = new THREE.Scene()
   const envAtm = makeAtmosphere(R_E, 1e-3, false)
-  const envGround = new THREE.Mesh(new THREE.SphereGeometry(5e4, 32, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x40382a, side: THREE.BackSide, depthWrite: false }))
+  // ground hemisphere of the environment: land to the west, Gulf to the east (per-vertex radiance)
+  const envGroundGeo = new THREE.SphereGeometry(5e4, 32, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)
+  const envGroundCol = new THREE.BufferAttribute(new Float32Array(envGroundGeo.attributes.position.count * 3), 3)
+  envGroundGeo.setAttribute("color", envGroundCol)
+  const envGroundSea = new Float32Array(envGroundGeo.attributes.position.count)
+  for (let k = 0; k < envGroundSea.length; k++) envGroundSea[k] = smoothstep(-0.2, 0.2, envGroundGeo.attributes.position.getX(k) / 5e4)
+  const envGround = new THREE.Mesh(envGroundGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, side: THREE.BackSide, depthWrite: false }))
   envGround.renderOrder = -6
   envScene.add(envAtm.mesh, envGround)
   let skyEnv: THREE.WebGLRenderTarget | null = null
   let envKey = ""
   const envOrigin = new THREE.Vector3()
-  const updateEnv = (sunDir: THREE.Vector3, alt: number, dayK: number, rn: number): void => {
+  // ---- per-frame atmosphere state (scratch storage: nothing below allocates per frame)
+  const f3 = new Float64Array(3), fL = new Float64Array(3), fT = new Float64Array(3)
+  /** centre of the sphere the atmosphere is integrated over (tangent to the local ground near the pad) */
+  const centreAtm = new THREE.Vector3(0, -R_E, 0)
+  const centreL = new THREE.Vector3(0, -R_E, 0)
+  const centreG = new THREE.Vector3()
+  /** direct sunlight: transmittance colour at the vehicle, irradiance at the sea surface, on the cloud deck */
+  const sunTint = new THREE.Color(1, 1, 1), seaSun = new THREE.Color(), cloudSunColor = new THREE.Color(), cloudSunSpace = new THREE.Color(1, 0.97, 0.92).multiplyScalar(CLOUD_SUN_E)
+  /** sea-level sky near the pad, re-evaluated when the Sun's elevation changes by ≈ 0.25° */
+  const sky = { key: NaN, ambient: new THREE.Color(), zenith: new THREE.Color(), horizon: new THREE.Color(), sunSide: new THREE.Color() }
+  const clampSky = (c: THREE.Color, a: Float64Array): THREE.Color => c.setRGB(Math.min(a[0], ATM.SKY_MAX), Math.min(a[1], ATM.SKY_MAX), Math.min(a[2], ATM.SKY_MAX))
+  const updateSkyLight = (sinElev: number): void => {
+    if (Math.abs(sinElev - sky.key) < 0.004) return
+    sky.key = sinElev
+    const se = Math.max(-1, Math.min(1, sinElev)), ce = Math.sqrt(1 - se * se) // Sun in the x–y plane (+x = its azimuth)
+    skyAmbient(0.05, ce, se, 0, f3); sky.ambient.setRGB(f3[0], f3[1], f3[2])
+    skyRadiance(0.05, 0, 1, 0, ce, se, 0, f3); clampSky(sky.zenith, f3)
+    skyRadiance(0.05, 0, HOR_S, HOR_C, ce, se, 0, f3); clampSky(sky.horizon, f3)
+    skyRadiance(0.05, HOR_C, HOR_S, 0, ce, se, 0, f3); clampSky(sky.sunSide, f3)
+    sky.sunSide.setRGB(Math.max(0, sky.sunSide.r - sky.horizon.r), Math.max(0, sky.sunSide.g - sky.horizon.g), Math.max(0, sky.sunSide.b - sky.horizon.b))
+  }
+  const coastLight = { sunDir: new THREE.Vector3(0, 1, 0), sunColor: seaSun, skyZenith: sky.zenith, skyHorizon: sky.horizon, skySun: sky.sunSide, skyAmbient: sky.ambient, time: 0 }
+  // Lambertian albedo of what lies below the horizon in the environment map: tidal flats and scrub
+  // to the west, Gulf water (incl. its sky reflection) to the east, ocean + cloud from altitude
+  const ENV_LAND = [0.2, 0.185, 0.13], ENV_SEA = [0.045, 0.085, 0.115], ENV_HIGH = [0.13, 0.2, 0.32]
+  const updateEnv = (sunDir: THREE.Vector3, alt: number, dayK: number, sunFrac: number): void => {
     // fine quantisation (altitude ≈ 5 % in log, Sun ≈ 1°, day factor 5 %): consecutive captures differ imperceptibly
-    const key = `${Math.round(Math.log1p(Math.max(alt, 0) / 200) * 20)}|${Math.round(dayK * 20)}|${Math.round(sunDir.x * 57)},${Math.round(sunDir.y * 57)},${Math.round(sunDir.z * 57)}`
+    const key = `${quality.envSize}|${Math.round(Math.log1p(Math.max(alt, 0) / 200) * 20)}|${Math.round(dayK * 20)}|${Math.round(sunFrac * 10)}|${Math.round(sunDir.x * 57)},${Math.round(sunDir.y * 57)},${Math.round(sunDir.z * 57)}`
     if (key === envKey) return
     envKey = key
-    envAtm.mesh.position.set(0, -rn, 0)
+    envAtm.mesh.position.copy(centreAtm)
     envAtm.update(sunDir, envAtm.mesh.position, envOrigin, 1)
-    // ground below the horizon: coastal scrub near the pad, ocean/cloud Earth from altitude
+    // ground radiance = albedo × (E_sun sin(elevation) + E_sky) / π, with E_sky = π × mean sky radiance;
+    // a small floor (airglow, distant lights) keeps the night side from being a black hole in reflections
     const kHigh = Math.max(0, Math.min(1, alt / 20e3))
-    const c = new THREE.Color(0.2, 0.19, 0.14).lerp(new THREE.Color(0.13, 0.2, 0.32), kHigh).multiplyScalar(Math.max(0.03, dayK))
-    ;(envGround.material as THREE.MeshBasicMaterial).color.copy(c)
+    const sy = (Math.max(sunDir.y, 0) * SUN_E * sunFrac) / Math.PI
+    const er = sunTint.r * sy + sky.ambient.r + 0.004, eg = sunTint.g * sy + sky.ambient.g + 0.004, eb = sunTint.b * sy + sky.ambient.b + 0.004
+    const col = envGroundCol.array as Float32Array
+    for (let k = 0; k < envGroundSea.length; k++) {
+      const w = envGroundSea[k]
+      for (let c = 0; c < 3; c++) {
+        const a = (ENV_LAND[c] + (ENV_SEA[c] - ENV_LAND[c]) * w) * (1 - kHigh) + ENV_HIGH[c] * kHigh
+        col[k * 3 + c] = a * (c === 0 ? er : c === 1 ? eg : eb)
+      }
+    }
+    envGroundCol.needsUpdate = true
     skyEnv?.dispose()
-    skyEnv = pmrem.fromScene(envScene, 0, 0.1, 1e6)
+    skyEnv = pmrem.fromScene(envScene, 0, 0.1, 1e6, { size: quality.envSize })
   }
   // ---- local frame (metres, ship at the origin)
   const local = new THREE.Group()
@@ -352,6 +457,9 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     // exploded-view spring: soft, slightly bouncy outward; stiff and fast back together
     const nowMs = performance.now()
     const dtS = Math.min(0.05, (nowMs - lastFrame) / 1000)
+    // frame-time governor: drop a quality level when the smoothed frame time stays over budget
+    const level = QUALITY_LEVELS[governor.sample(nowMs - lastFrame)]
+    if (level !== quality) { quality = level; applyQuality() }
     lastFrame = nowMs
     const kSp = explodeTarget > 0.5 ? 55 : 160
     const cSp = 2 * Math.sqrt(kSp) * (explodeTarget > 0.5 ? 0.6 : 0.9)
@@ -400,19 +508,50 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     const jd = rec.meta.epochJd + t / 86400
     const s = sunDirectionEci(jd)
     const sunThree = toThree(new THREE.Vector3(s.x, s.y, s.z)).normalize()
-    sun.position.copy(sunThree).multiplyScalar(800)
-    sun.target.position.set(0, 0, 0)
+    // shadow frustum: fitted to the ship (and the tower once the ship is within reach), snapped to
+    // shadow texels in the pad frame; the light direction is unchanged (position − target ∥ Sun)
+    const padP = pad.root.position
+    fitShadow(shadowFit, sunThree.x, sunThree.y, sunThree.z, padP.x, padP.y, padP.z, pad.root.visible, sun.shadow.mapSize.x)
+    sun.position.set(shadowFit.px, shadowFit.py, shadowFit.pz)
+    sun.target.position.set(shadowFit.cx, shadowFit.cy, shadowFit.cz)
+    if (shadowFit.half !== shadowHalf) {
+      shadowHalf = shadowFit.half
+      const sc = sun.shadow.camera
+      sc.left = -shadowHalf; sc.right = shadowHalf; sc.top = shadowHalf; sc.bottom = -shadowHalf
+      sc.near = shadowFit.near; sc.far = shadowFit.far
+      sc.updateProjectionMatrix()
+      // biases follow the texel size (m): normal offset 1.6 texels, depth offset 0.6 texel + 3 cm;
+      // PCF radius ≈ 0.16 m of penumbra (1 … 3.5 texels, Vogel disc with a fixed per-pixel rotation)
+      sun.shadow.normalBias = Math.max(0.05, 1.6 * shadowFit.texel)
+      sun.shadow.bias = -(0.6 * shadowFit.texel + 0.03) / (shadowFit.far - shadowFit.near)
+      sun.shadow.radius = Math.max(1, Math.min(3.5, 0.16 / shadowFit.texel))
+    }
     const skyFade = Math.exp(-Math.max(alt, 0) / 8000) // overhead air column (star visibility)
     const sunEcef = new THREE.Vector3(s.x, s.y, s.z).applyMatrix4(new THREE.Matrix4().makeRotationZ(-th))
-    const centreL = new THREE.Vector3(0, -rn, 0)
+    centreL.set(0, -rn, 0)
     const sunGlobe = g(sunEcef.x, sunEcef.y, sunEcef.z).normalize()
-    earthL.update(sunThree, centreL, camera, 1)
-    earthG.update(sunGlobe, new THREE.Vector3(), camera, 1)
+    // The atmosphere is integrated over a sphere tangent to the local ground while the coast is in
+    // view (the WGS84 pad lies ≈ 3 km above the mean-radius sphere the globe is drawn with), and over
+    // the true sphere away from it; the 3 km blend happens between 25 and 45 km altitude.
+    const groundK = (1 - smoothstep(25e3, 45e3, pu)) * (1 - smoothstep(60e3, 100e3, dhPad))
+    centreAtm.set(padP.x, padP.y - R_E, padP.z).multiplyScalar(groundK).addScaledVector(centreL, 1 - groundK)
+    earthL.update(sunThree, centreL, camera, 1, centreAtm)
+    earthG.update(sunGlobe, centreG, camera, 1)
     // eclipse: the Sun sets behind the Earth's limb (penumbra over the solar disc)
     const sunFrac = sunVisible(sunThree, centreL, R_E)
     const dayK = Math.max(0, Math.min(1, sunThree.y * 4 + 0.3))
-    const cloudSunColor = new THREE.Color(1, 0.96, 0.9).multiply(sunTintRGB(sunThree.y)).multiplyScalar(3.0)
-    const cloudSkyColor = new THREE.Color(0.163, 0.274, 0.423).multiplyScalar(dayK)
+    // direct sunlight at the vehicle: transmittance of the slant path through the atmosphere above it
+    const rAtm = centreAtm.length()
+    const sinElShip = -sunThree.dot(centreAtm) / rAtm
+    sunTransmittance((rAtm - R_E) / 1000, sinElShip, f3)
+    sunTint.setRGB(f3[0], f3[1], f3[2])
+    // sea-level sky and sunlight near the pad (local horizontal ≈ the frame's), cloud-deck sunlight
+    updateSkyLight(sunThree.y)
+    sunTransmittance(0, sunThree.y, f3)
+    seaSun.setRGB(f3[0], f3[1], f3[2]).multiplyScalar(SUN_E * sunFrac)
+    sunTransmittance(CLOUD_ALT_KM, sunThree.y, f3)
+    cloudSunColor.setRGB(f3[0], f3[1], f3[2]).multiplyScalar(CLOUD_SUN_E)
+    const cloudSkyColor = sky.ambient
     // hand-off: the planet-wide shell from orbit down, the pad-frame volumetric deck on approach;
     // local deck's region grows with altitude and the global shell is holed out underneath it
     // the hand-off starts at 60 km but is strongly weighted toward the ground: above ~30 km the
@@ -436,7 +575,7 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     cloudsGlobalG.mesh.matrix.makeScale(cloudsGlobalG.shellRadius, cloudsGlobalG.shellRadius, cloudsGlobalG.shellRadius)
     cloudsGlobalG.mesh.matrixWorldNeedsUpdate = true
     cloudsGlobalG.update({
-      sunDir: sunGlobe, sunColor: cloudSunColor, skyColor: cloudSkyColor, centre: new THREE.Vector3(),
+      sunDir: sunGlobe, sunColor: cloudSunSpace, skyColor: cloudSkyColor, centre: centreG,
       camera: camera.position, time: nowS, wind: [cloudWind.x, cloudWind.y] as const, eclipse: 1, holeAmount: 0,
     })
     cloudsGlobalG.mesh.visible = !envHidden.has("earth") && !envHidden.has("clouds")
@@ -447,14 +586,15 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
       clouds.update({
         sunDir: sunThree, sunColor: cloudSunColor, skyColor: cloudSkyColor,
         origin: pad.root.position, time: nowS, wind: [cloudWind.x, cloudWind.y] as const, eclipse: sunFrac,
-        extent: localExtent, fade: localK,
+        extent: localExtent, fade: localK, steps: quality.cloudSteps,
       })
     } else {
       clouds.mesh.userData.sunTransmittance = 1
     }
     clouds.mesh.visible = cloudLocal
-    coast.water.uniforms.uTime.value = nowS
-    coast.water.uniforms.uSun.value.copy(sunThree)
+    coastLight.sunDir.copy(sunThree)
+    coastLight.time = nowS
+    coast.setLight(coastLight)
     // background: studio, or sky (Preetham) fading to black space with stars
     if (physicalSky) {
       scene.background = black
@@ -462,20 +602,50 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
       const starK = Math.max(0, Math.min(1, (0.12 - skyFade * dayK) / 0.1))
       ;(stars.material as THREE.PointsMaterial).color.setScalar(starK)
       stars.visible = starK > 0.01
-      updateEnv(sunThree, alt, dayK, rn)
+      updateEnv(sunThree, alt, dayK, sunFrac)
       scene.environment = skyEnv ? skyEnv.texture : null
       scene.environmentIntensity = 0.6
-      renderer.toneMappingExposure = 0.6
+      // exposure follows the daylight at the vehicle (brighter at dusk, base value above the weather)
+      renderer.toneMappingExposure = exposureForSun(sinElShip, alt)
+      // direct sunlight: atmospheric transmittance (colour) × eclipse fraction × cloud shadow
+      sun.color.copy(sunTint)
+      sun.intensity = SUN_E * sunFrac * Number(clouds.mesh.userData.sunTransmittance ?? 1)
+      // sky fill: hue of the mean sky radiance at the pad, at the brightness of the reference tint
+      const la = luminance(sky.ambient.toArray(f3))
+      hemi.color.copy(sky.ambient).multiplyScalar(0.665 / Math.max(la, 0.02))
     } else {
       scene.background = studio; stars.visible = false
       scene.environment = roomEnv
       scene.environmentIntensity = 1
       renderer.toneMappingExposure = 0.85
+      // studio (CAD) lighting: the fixed warm key light of the Fusion-style view, dimmed as before
+      sun.color.copy(STUDIO_SUN)
+      sun.intensity = 3.0 * sunFrac * (alt > 30e3 ? 1 : Math.max(0.05, Math.min(1, sunThree.y * 3 + 0.2))) * Number(clouds.mesh.userData.sunTransmittance ?? 1)
+      hemi.color.copy(HEMI_SKY)
     }
-    // direct sunlight: eclipse fraction × low-sun dimming near the ground (long slant path)
-    sun.intensity = 3.0 * sunFrac * (alt > 30e3 ? 1 : Math.max(0.05, Math.min(1, sunThree.y * 3 + 0.2)))
-    sun.intensity *= Number(clouds.mesh.userData.sunTransmittance ?? 1)
+    // no shadow pass while the Sun gives no light (night, eclipse): the last map is simply kept
+    sun.shadow.autoUpdate = sun.intensity * (sun.color.r + sun.color.g + sun.color.b) > 1e-3
     hemi.intensity = (physicalSky ? 0.2 : 0.5) * Math.max(0.15, dayK) * (alt > 60e3 ? 0.4 : 1)
+    // aerial perspective of solid objects: fit the scene fog to the atmosphere model along the path
+    // to the farther of the ship (origin) and the pad, so that both ends are right — the nearer one
+    // is then (correctly) almost clear
+    fog.density = 0
+    if (physicalSky && mode !== "globe") {
+      const cp = camera.position
+      const dShip = cp.length(), dPad = pad.root.visible ? cp.distanceTo(padP) : 0
+      const toPad = dPad > dShip, dist = Math.max(dShip, dPad)
+      const ax = toPad ? padP.x : 0, ay = toPad ? padP.y : 0, az = toPad ? padP.z : 0
+      aerialPerspective(
+        (cp.x - centreAtm.x) / 1000, (cp.y - centreAtm.y) / 1000, (cp.z - centreAtm.z) / 1000,
+        (ax - centreAtm.x) / 1000, (ay - centreAtm.y) / 1000, (az - centreAtm.z) / 1000,
+        sunThree.x, sunThree.y, sunThree.z, fL, fT,
+      )
+      const k = Math.min(0.97, 1 - luminance(fT)) // fog factor at the anchor = 1 − path transmittance
+      if (k > 1e-3 && dist > 1) {
+        fog.density = Math.sqrt(-Math.log(1 - k)) / dist // FogExp2: 1 − exp(−(density · depth)²)
+        fog.color.setRGB(fL[0] / k, fL[1] / k, fL[2] / k)
+      }
+    }
     // wind field: forecast profile + measured local offset (as the guidance uses it)
     const wE = v("windE", i, f), wN = v("windN", i, f)
     const m0 = meanWindEnu(alt, windP)
@@ -517,6 +687,7 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     let nh: THREE.Object3D | null = null
     if (hit) { let o: THREE.Object3D | null = hit.object; while (o && !cands.includes(o)) o = o.parent; nh = o }
     hovered = nh
+    if (composer.readBuffer !== sceneTarget) composer.swapBuffers()
     composer.render()
     updateCube?.(camera, controls.target)
     const w = canvas.clientWidth, h = canvas.clientHeight
@@ -540,6 +711,7 @@ export const createView = (canvas: HTMLCanvasElement, labelLayer: HTMLElement, c
     const w = canvas.clientWidth, h = canvas.clientHeight
     renderer.setSize(w, h, false)
     composer.setSize(w, h)
+    applyQuality()
     camera.aspect = w / Math.max(h, 1)
     camera.updateProjectionMatrix()
   }

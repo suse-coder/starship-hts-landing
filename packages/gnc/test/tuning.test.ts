@@ -13,14 +13,15 @@ describe("MissionTuning defaults", () => {
   test("reproduce the flown constants", () => {
     const T = MISSION_TUNING_DEFAULT
     expect(T.aimEntry).toBe(180e3)
-    expect(T.aimHigh).toBe(900) // still air: the no-wind delivery is tuned here
-    expect(T.bellyPlanEnd).toBe(1300) // the flip fall + the two-engine stop distance
+    expect(T.aimHigh).toBe(1500) // still air: tuned together with the flip gate (see flipComplete)
+    expect(T.bellyPlanEnd).toBe(2550) // flip ignition height of the gate: flipComplete + ≈ 1000 m of fall
     expect(T.bellyBankRateDeg).toBe(1.8)
     expect(T.gateMiss).toBe(420)
     expect(T.gateClosing).toBe(35)
     expect(T.gateLat).toBe(4.5)
     expect(T.flipDv).toBe(35)
-    expect(T.flipFall).toBe(5.9)
+    expect(T.flipFall).toBe(8) // s of fall per m/s of sink: the flip-and-stop lasts ≈ 12.7 s
+    expect(T.flipComplete).toBe(1550) // the flip is complete ≈ 1.2 km above the rails (the ship is over the arms at 1 km)
     expect(T.landingEngines).toBe(2) // hard rule
     expect(T.contactSpeed).toBe(0.7)
     expect(T.landingWn).toBe(1.7)
@@ -75,7 +76,7 @@ describe("MissionTuning validation", () => {
     const T = MissionTuning.decode({ gateMiss: 700, rollBandAeroDeg: 0.2 })
     expect(T.gateMiss).toBe(700)
     expect(T.rollBandAeroDeg).toBe(0.2)
-    expect(T.aimHigh).toBe(900)
+    expect(T.aimHigh).toBe(1500)
     expect(MissionTuning.decode(T.toJSON()).toValues()).toEqual(T.toValues())
   })
 })

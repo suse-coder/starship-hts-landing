@@ -65,7 +65,7 @@ export const makeWorld = (design: DesignParams = DEFAULT_DESIGN, log: (s: string
   const plan = planMission((theta0, pad) => predContext(aeroTab, mhdDrag, aero.sref, theta0, pad, windForecast), { ...DEFAULT_PLAN, mass: massProps(vehicle, c0).m })
   const guide: GuideCtx = {
     vehicle, pred: predContext(aeroTab, mhdDrag, aero.sref, plan.theta0, padEcef, windForecast), aero: aeroTab,
-    tBurn: plan.tBurn, dvBurn: plan.dvBurn, armHeight: TOWER.armHeight, catchHold: 8,
+    tBurn: plan.tBurn, dvBurn: plan.dvBurn, armHeight: TOWER.armHeight, catchHold: 4,
     tRamp: Math.max(plan.tBurn + 20, plan.pred.tEntry - 780),
     windForecast,
     // landing aero database, referenced to the CG with the main tanks empty and the headers full

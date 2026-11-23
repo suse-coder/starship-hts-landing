@@ -3,6 +3,8 @@ import type { VehicleConfig } from "@ship/craft"
 import { THERMAL_LIMITS as TL, type ThermalGrid } from "@ship/heat"
 import { blackbody, makePlasmaMaterial, makeShockLayerMaterial, makePlumeMaterial, makeShockMaterial, makeWakeMaterial } from "./fx"
 import { ASM_LABEL, type Assembly, makeParts, makePicaGeometry, makePicaMaps, makeRaptor, MAT } from "./parts"
+import { LAYOUT } from "./parts/layout"
+import { applySteelHull } from "./hullMaterial"
 
 /**
  * The vehicle in BODY axes (x along the axis toward the nose, origin at the aft skirt plane).
@@ -124,7 +126,12 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   }
   const baseCol = new Float32Array(nV * 3)
   hullGeo.setAttribute("color", new THREE.BufferAttribute(baseCol, 3))
-  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.88, roughness: 0.3, transparent: true, side: THREE.DoubleSide })
+  // bare 30X stainless: a conductor (metalness ≈ 1; 0.96 keeps a trace of diffuse so the skin never
+  // goes black where the simple sky environment has nothing to reflect), cold-rolled 2B finish
+  // (roughness ≈ 0.3), with the ring / weld / oil-canning detail of hullMaterial.ts
+  const HULL_METAL = 0.96, HULL_ROUGH = 0.3
+  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: HULL_METAL, roughness: HULL_ROUGH, transparent: true, side: THREE.DoubleSide })
+  const hullDetail = applySteelHull(hullMat, { ringH: LAYOUT.ringH, aftX: X_OPEN, tpsX: v.pica.x0 })
   const hull = new THREE.Mesh(hullGeo, hullMat)
   hull.castShadow = true
   hull.receiveShadow = true
@@ -165,7 +172,11 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
   // bay must be closed — without this the engines and flaps hang in the open. A frustum from the
   // hull's aft edge down to the engine mount plate, plus the plate itself.
   {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x9aa1a8, metalness: 0.85, roughness: 0.38, side: THREE.DoubleSide })
+    const steel = new THREE.MeshStandardMaterial({ color: 0x9aa1a8, metalness: 0.92, roughness: 0.38, side: THREE.DoubleSide })
+    // the engine section runs hot: the whole skirt carries the temper tint (aft band from x = 3.7 m)
+    applySteelHull(steel, { ringH: LAYOUT.ringH, aftX: 3.7 })
+    // the mount plate and the rim ring are not bodies of revolution in the body frame: plain steel
+    const steelFlat = new THREE.MeshStandardMaterial({ color: 0x8f959b, metalness: 0.92, roughness: 0.42, side: THREE.DoubleSide })
     const rAft = v.shape.r(X_OPEN) * 0.995
     // cylindrical aft skirt (the flap hinges sit on it at r ≈ 4.55, x ≈ 4.6), then a shallow dome to
     // the engine mount plate; the bells hang below the plate
@@ -174,13 +185,13 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
     skirtMesh.castShadow = true
     layer("hull").add(skirtMesh)
     // engine mount plate (the bells bolt to this)
-    const plate = new THREE.Mesh(new THREE.CircleGeometry(2.55, 48), steel)
+    const plate = new THREE.Mesh(new THREE.CircleGeometry(2.55, 48), steelFlat)
     plate.rotation.y = -Math.PI / 2
     plate.position.x = 3.7
     plate.castShadow = true
     layer("hull").add(plate)
     // rim ring at the hull's aft edge, so the skirt reads as structure and not a floating cone
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(rAft, 0.12, 12, 64), steel)
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(rAft, 0.12, 12, 64), steelFlat)
     rim.rotation.y = Math.PI / 2
     rim.position.x = X_OPEN
     layer("hull").add(rim)
@@ -398,8 +409,9 @@ export const makeShip = (v: VehicleConfig, grid: ThermalGrid): ShipModel => {
       }
       hullGeo.attributes.color.needsUpdate = true
       glowGeo.attributes.color.needsUpdate = true
-      hullMat.metalness = f.thermalMode ? 0.1 : 0.88
-      hullMat.roughness = f.thermalMode ? 0.7 : 0.3
+      hullMat.metalness = f.thermalMode ? 0.1 : HULL_METAL
+      hullMat.roughness = f.thermalMode ? 0.7 : HULL_ROUGH
+      hullDetail.value = f.thermalMode ? 0 : 1
       pica.visible = !f.thermalMode
       glow.visible = !f.thermalMode && layer("hull").visible
       lastHeat = f.heat

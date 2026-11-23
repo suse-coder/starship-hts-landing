@@ -82,3 +82,81 @@ describe("engine-out reconfiguration", () => {
     expect(Math.hypot(one.y, one.z)).toBeGreaterThan(0.03)
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+// single-engine vertical descent ("slam"): the pure pieces of the law
+// ---------------------------------------------------------------------------------------------
+import { pinLoop, SLAM, slamCommand, slamPredict, slamProfile, slamSinkLimit, slamTiltCap, slamTube, slewLat } from "../src/landingLaw"
+
+describe("slam: pin-loop pole placement", () => {
+  test("the closed loop s⁴ + 2ζω s³ + ω² s² + ω²k_d s + ω²k_p is (s + p)⁴", () => {
+    const g = pinLoop(0.8)
+    const p = g.p
+    // coefficients of (s + p)^4: 4p, 6p², 4p³, p⁴
+    expect(2 * g.zeta * g.wn).toBeCloseTo(4 * p, 9)
+    expect(g.wn * g.wn).toBeCloseTo(6 * p * p, 9)
+    expect(g.wn * g.wn * g.kd).toBeCloseTo(4 * p ** 3, 9)
+    expect(g.wn * g.wn * g.kp).toBeCloseTo(p ** 4, 9)
+  })
+
+  test("the law it replaced (ω 0.8, ζ 1, k_p 0.25, k_d 1.1 on the CG) fails the Routh test", () => {
+    // s⁴ + a3 s³ + a2 s² + a1 s + a0 is stable iff a3·a2 > a1 and a3·a2·a1 > a1² + a3²·a0
+    const w = 0.8, z = 1.0, kp = 0.25, kd = 1.1
+    const a3 = 2 * z * w, a2 = w * w, a1 = w * w * kd, a0 = w * w * kp
+    expect(a3 * a2 > a1).toBe(true)
+    expect(a3 * a2 * a1 > a1 * a1 + a3 * a3 * a0).toBe(false) // unstable
+    const g = pinLoop()
+    const b3 = 2 * g.zeta * g.wn, b2 = g.wn * g.wn, b1 = b2 * g.kd, b0 = b2 * g.kp
+    expect(b3 * b2 * b1 > b1 * b1 + b3 * b3 * b0).toBe(true) // the pole placement is stable
+  })
+})
+
+describe("slam: vertical profile and limits", () => {
+  const env = { ez: 0, lo: 7.2, hi: 19.6, contactSpeed: 0.7 }
+  test("the profile ends at the contact speed and is continuous at the end-segment height", () => {
+    expect(slamProfile(0, 0.7).v).toBeCloseTo(-0.7, 9)
+    expect(slamProfile(SLAM.hEnd - 1e-9, 0.7).v).toBeCloseTo(slamProfile(SLAM.hEnd + 1e-9, 0.7).v, 6)
+    expect(slamProfile(500, 0.7).a).toBe(SLAM.aD)
+  })
+  test("falls at the throttle floor above the profile and brakes on it (never before)", () => {
+    // 1000 m up at −40 m/s the braking curve is at −122 m/s: the engine stays at its floor
+    const fall = slamCommand({ x: 0, y: 0, z: 1000 }, { x: 0, y: 0, z: 0 }, -40, env)
+    expect(fall.braking).toBe(false)
+    expect(fall.u.z).toBe(env.lo)
+    const onCurve = slamCommand({ x: 0, y: 0, z: 300 }, { x: 0, y: 0, z: 0 }, slamProfile(300, 0.7).v - 2, env)
+    expect(onCurve.braking).toBe(true)
+    expect(onCurve.u.z).toBeGreaterThan(9.81 + 0.8 * SLAM.aD)
+  })
+  test("the lateral command points at the axis and respects the tilt cap", () => {
+    const c = slamCommand({ x: 40, y: 0, z: 500 }, { x: 0, y: 0, z: 0 }, -60, env)
+    expect(c.u.x).toBeLessThan(0)
+    expect(Math.atan2(Math.hypot(c.u.x, c.u.y), c.u.z)).toBeLessThanOrEqual(slamTiltCap(500) + 1e-9)
+    expect(slamTiltCap(2000)).toBeGreaterThan(slamTiltCap(200))
+  })
+  test("the predicted plan reaches the rails near the contact speed without stopping on the way", () => {
+    const pl = slamPredict(0, { rel: { x: 3, y: -2, z: 1200 }, vPin: { x: 0, y: 0, z: 0 }, vz: -25, tilt: { e: 0, n: 0 }, tiltRate: { e: 0, n: 0 }, aNow: 7.2, mass: 128e3, ve: 3620, pAe: 1.3e5, slew: 11.8 }, env)
+    const n = pl.z.length
+    expect(pl.z[n - 1]).toBe(0)
+    expect(Math.abs(pl.vz[n - 1])).toBeLessThan(2)
+    expect(Math.hypot(pl.x[n - 1], pl.y[n - 1])).toBeLessThan(0.3)
+    let up = 0, slow = 0
+    for (let i = 1; i < n; i++) { if (pl.vz[i] > 0) up++; if (pl.z[i] > 5 && pl.vz[i] > -2) slow++ }
+    expect(up).toBe(0) // never climbs
+    expect(slow).toBe(0) // never hovers above the last metres
+    expect(pl.fuel).toBeGreaterThan(8e3)
+    expect(pl.fuel).toBeLessThan(16e3)
+  })
+  test("constraint band: narrows with the time to go, never below the rail tolerance; sink limit grows with height", () => {
+    expect(slamTube(0, 0.8, 1.2)).toBeCloseTo(0.3, 9)
+    expect(slamTube(20, 0.8, 1.2)).toBeGreaterThan(slamTube(5, 0.8, 1.2))
+    expect(slamTube(5, 0.8, 1.2)).toBeGreaterThan(slamTube(1, 0.8, 1.2))
+    expect(slamSinkLimit(1000, 19.6, 0.7)).toBeLessThan(slamSinkLimit(100, 19.6, 0.7))
+    expect(slamSinkLimit(0, 19.6, 0.7)).toBeCloseTo(-0.7, 9)
+  })
+  test("the lateral command is slew-limited, faster when it shrinks", () => {
+    const grow = slewLat(0, 0, 1, 0, 1)
+    expect(grow.x).toBeCloseTo(SLAM.jerk, 9)
+    const shrink = slewLat(1, 0, 0, 0, 1)
+    expect(1 - shrink.x).toBeCloseTo(3 * SLAM.jerk, 9)
+  })
+})

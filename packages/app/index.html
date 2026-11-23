@@ -44,6 +44,9 @@
           <span class="sep"></span>
           <select id="cam" title="Camera"><option value="chase">Orbit ship</option><option value="tower">Tower camera</option><option value="globe">Globe</option><option value="side">2D side view</option></select>
         </div>
+
+        <!-- second workspace (tab "MPC diagrams"): covers the 3D scene while it is open; built by src/diagrams/view.ts -->
+        <div id="diagrams" class="hidden"></div>
       </div>
 
       <section id="tl">
@@ -66,7 +69,11 @@
           </div>
         </div>
         <div class="tl-foot">
-          <div class="story"><span class="tab">Flight15_Ship42</span> <span class="plus">＋</span></div>
+          <div class="story" role="tablist">
+            <span class="tab active" id="tab-scene" role="tab" tabindex="0" aria-selected="true" title="3D scene">Flight15_Ship42</span>
+            <span class="tab" id="tab-diagrams" role="tab" tabindex="0" aria-selected="false" title="Plan, command and flown value of every degree of freedom of the landing guidance">MPC diagrams</span>
+            <span class="plus">＋</span>
+          </div>
           <div class="transport">
             <button id="b-start" title="Go to start (Home)">⏮</button>
             <button id="b-prev" title="Previous phase">⏪</button>

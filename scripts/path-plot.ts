@@ -136,10 +136,10 @@ out.push(`<rect width="${W}" height="${H}" fill="${BG}"/>`)
 const terminal = process.argv.includes("--terminal")
 if (terminal) {
   // the last seconds only: where the overshoot lives
-  panel({ box: [70, 100, 880, 530], title: "SIDE — last 25 m (north vs height)", u: [-14, 14], v: [0, 26], mode: "side" })
-  panel({ box: [960, 100, 1730, 530], title: "SIDE — last 3 m (north vs height)", u: [-2.2, 2.2], v: [0, 3.2], mode: "side" })
-  panel({ box: [70, 660, 880, 1090], title: "PLAN — last 25 m (east vs north)", u: [-14, 14], v: [-14, 14], mode: "plan" })
-  panel({ box: [960, 660, 1730, 1090], title: "PLAN — last 3 m", u: [-2.2, 2.2], v: [-2.2, 2.2], mode: "plan" })
+  panel({ box: [70, 100, 880, 530], title: "SIDE — last 25 m of height (north vs height)", u: [-14, 14], v: [0, 26], mode: "side" })
+  panel({ box: [960, 100, 1730, 530], title: "SIDE — last 3 m of height (north vs height)", u: [-2.2, 2.2], v: [0, 3.2], mode: "side" })
+  panel({ box: [70, 660, 880, 1090], title: "PLAN — within ±14 m of the axis (east vs north)", u: [-14, 14], v: [-14, 14], mode: "plan" })
+  panel({ box: [960, 660, 1730, 1090], title: "PLAN — within ±2.2 m of the axis", u: [-2.2, 2.2], v: [-2.2, 2.2], mode: "plan" })
 } else {
   panel({ box: [70, 100, 880, 530], title: "SIDE — belly flop to catch (north vs height)", u: [-2200, 7200], v: [0, 25000], mode: "side" })
   panel({ box: [960, 100, 1730, 530], title: "SIDE — last 600 m (dashed = guidance plan)", u: [-420, 420], v: [0, 620], mode: "side" })

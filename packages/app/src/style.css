@@ -109,7 +109,9 @@ select { background: #fff; border: 1px solid var(--line); border-radius: 2px; pa
 #playhead .knob { position: absolute; top: 1px; left: -5px; width: 11px; height: 15px; background: #c9d2db; border: 1px solid #6b737b; border-radius: 2px 2px 5px 5px; }
 .tl-foot { height: 24px; flex: none; display: flex; align-items: center; border-top: 1px solid var(--line); background: #fafbfc; padding: 0 8px; }
 .tl-foot .story { flex: 1; display: flex; align-items: center; gap: 8px; }
-.tl-foot .story .tab { color: var(--acc); border-bottom: 2px solid var(--acc); padding: 0 2px; }
+.tl-foot .story .tab { color: #5d656d; border-bottom: 2px solid transparent; padding: 0 2px; cursor: pointer; user-select: none; white-space: nowrap; }
+.tl-foot .story .tab:hover { color: var(--text); border-bottom-color: var(--line); }
+.tl-foot .story .tab.active { color: var(--acc); border-bottom-color: var(--acc); font-weight: 600; }
 .tl-foot .story .plus { color: #6b737b; font-size: 14px; }
 .tl-foot .transport { display: flex; gap: 2px; }
 .tl-foot .right { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
@@ -156,6 +158,42 @@ button.txt { font-size: 11.5px; border-color: var(--line); background: #fff; }
 .survival table.hot tr[data-i] { cursor: pointer; }
 .survival table.hot tr[data-i]:hover { background: #e6f3fb; }
 .survival .note { color: var(--dim); font-size: 10px; margin: 6px 0 0; line-height: 1.35; }
+
+/* MPC diagram workspace (second tab): a dark plotting surface over the whole stage, like the 2D side
+   view and the loading sketch. It covers the 3D scene and its overlay panels while it is open. */
+#diagrams { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; background: #0b1119; color: #c9d4de; }
+.dg-bar { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; padding: 4px 10px; background: #111a25; border-bottom: 1px solid #223040; }
+.dg-title { font-size: 12.5px; font-weight: 600; color: #eef4fa; letter-spacing: 0.02em; }
+.dg-sub { color: #7f8c99; font-size: 11px; }
+.dg-ranges { display: flex; gap: 3px; }
+.dg-btn { font-size: 11px; padding: 1px 8px; color: #c9d4de; background: #16212e; border: 1px solid #2a3a4c; }
+.dg-btn:hover { background: #1d2c3d; border-color: #3d5670; }
+.dg-btn.on { color: #fff; border-color: var(--acc); background: #12344a; }
+.dg-btn:disabled { opacity: 0.35; cursor: default; }
+.dg-fit { color: #9aa6b2; font-size: 11px; }
+.dg-key { display: flex; align-items: center; gap: 10px; font-size: 10.5px; color: #9aa6b2; white-space: nowrap; }
+.dg-key span { display: flex; align-items: center; gap: 4px; }
+.dg-key i { display: inline-block; width: 16px; height: 0; border-top: 2px solid; }
+.dg-key .k-plan { border-top: 2px dashed #eef4fa; }
+.dg-key .k-flown { border-color: #4fe6ff; }
+.dg-key .k-cmd { border-color: #ffb347; }
+.dg-key .k-band { height: 8px; border: 1px solid rgba(90, 240, 160, 0.55); background: rgba(90, 240, 160, 0.17); }
+.dg-key .k-hard { border-top: 2px dashed #ff5a52; }
+.dg-key .k-play { width: 0; height: 11px; border-top: 0; border-left: 2px solid #ff9a3c; }
+.dg-read { margin-left: auto; color: #9aa6b2; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dg-grid { flex: 1; min-height: 0; display: grid; gap: 6px; padding: 6px; overflow-x: hidden; align-content: start; }
+.dg-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid #1f2c3a; background: #0b1119; }
+.dg-grid.has-max .dg-panel:not(.max) { display: none; }
+.dg-panel.max { border-color: #2f659f; }
+.dg-head { flex: none; display: flex; align-items: baseline; gap: 8px; height: 19px; line-height: 19px; padding: 0 6px; background: #111a25; border-bottom: 1px solid #1f2c3a; white-space: nowrap; overflow: hidden; }
+.dg-name { color: #dbe6f0; font-size: 11px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; user-select: none; }
+.dg-name:hover { color: #fff; text-decoration: underline; }
+.dg-name b { color: var(--acc); font-weight: 600; }
+.dg-name em { font-style: normal; color: #7f8c99; }
+.dg-stats { margin-left: auto; color: #7cf0b0; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.dg-plot { position: relative; flex: 1; min-height: 0; }
+.dg-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.dg-help { flex: none; padding: 2px 10px 3px; font-size: 10px; color: #62707d; background: #0e1620; border-top: 1px solid #1a2532; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* worker error / timeout state (replaces the silent loading screen) */
 #loading.error #pstatus { color: #b42318; white-space: pre-wrap; text-align: left; max-height: 160px; overflow: auto; overflow-wrap: anywhere; word-break: break-word; }
