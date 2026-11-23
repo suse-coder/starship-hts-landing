@@ -25,9 +25,9 @@ if (all || flag("aero")) {
 }
 if (all || flag("capture")) {
   console.log("\nDESCENT CAPTURE SET (flight software, 1 engine, upright from 1300 m at −30 m/s — the state the flip hands over)")
-  console.log("off E,N [m]  v E,N [m/s]  outcome  off@1km  off@rails  overshoot  tilt max  pin-azimuth max  fuel     hover   contact")
+  console.log("off E,N [m]  v E,N [m/s]  outcome  off@1km  off@rails  overshoot  tilt max  pin azimuth max / at rails  fuel     hover   contact")
   for (const [x, y, vx, vy] of [[0, 0, 0, 0], [3, 0, 0, 0], [0, 3, 0, 0], [10, 0, 0, 0], [0, 10, 0, 0], [30, 0, 0, 0], [0, 30, 0, 0], [20, 20, 0, 0], [60, 0, 0, 0], [0, 60, 0, 0], [0, 0, 5, 0], [0, 0, 0, 5]] as const) {
     const c = captureCase(x, y, vx, vy)
-    console.log(`${String(x).padStart(4)},${String(y).padStart(3)}     ${String(vx).padStart(3)},${String(vy).padStart(3)}     ${c.outcome.padEnd(7)}  ${c.at1km.toFixed(2).padStart(6)}   ${c.atRails.toFixed(2).padStart(6)}     ${c.overshoot.toFixed(2).padStart(6)}    ${c.tiltMax.toFixed(1).padStart(5)}°      ${c.rollAngMax.toFixed(1).padStart(5)}°         ${(c.fuel / 1e3).toFixed(2)} t  ${c.hover.toFixed(1)} s   ${c.contactSpeed.toFixed(2)} m/s`)
+    console.log(`${String(x).padStart(4)},${String(y).padStart(3)}     ${String(vx).padStart(3)},${String(vy).padStart(3)}     ${c.outcome.padEnd(7)}  ${c.at1km.toFixed(2).padStart(6)}   ${c.atRails.toFixed(2).padStart(6)}     ${c.overshoot.toFixed(2).padStart(6)}    ${c.tiltMax.toFixed(1).padStart(5)}°      ${c.rollAngMax.toFixed(1).padStart(5)}° / ${c.rollAngRails.toFixed(2).padStart(5)}°      ${(c.fuel / 1e3).toFixed(2)} t  ${c.hover.toFixed(1)} s   ${c.contactSpeed.toFixed(2)} m/s`)
   }
 }

@@ -996,7 +996,14 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number, rollout?: Ro
       const burnSet = !flipping && !stagedNow && T.terminalEngines < T.landingEngines
       void burnSet
       const oneEng = !flipping && nEng === 1
-      const att = (pz > 450 || flipping) && !flipUp
+      // Pin azimuth. The two-engine flip turns the pins over the rails by differential gimbal (it
+      // hands over within ≈ 2°); on one engine the cold-gas roll couples then *hold* that azimuth
+      // for the whole descent. They used to be given a roll angle only below 450 m ("roll is free
+      // higher up"): a correction across the rails rolled the hull 13° through the gimbal's
+      // coupling and it stayed 12° off for the next 15 s, to be turned back in the last 400 m with
+      // an overshoot (measured). Seen from above, the pins were visibly not square to the arms.
+      const holdPins = oneEng && LAND.rollGas
+      const att = (pz > 450 || flipping) && !flipUp && !holdPins
         ? { x: attX, spin: 0, rate: rateEci }
         : { x: attX, z: zT, rate: rateEci }
       const cmdEngines: EngineCmd[] = [0, 1, 2].map((i) => ({ on: sel.includes(i), throttle, gp: 0, gy: 0 }))
@@ -1119,7 +1126,12 @@ export const guide = (ctx: GuideCtx, n: Nav, mem0: Mem, dt: number, rollout?: Ro
                   const avail = keepEng.gimbalMax - Math.atan(Math.hypot(keepEng.gimbal.y, keepEng.gimbal.z) / L)
                   const aAx = clamp(0.7 * b * avail, 0.03, 0.3)
                   const pl = pinLoop()
-                  return { ...gl, wn: pl.wn, zeta: pl.zeta, wMax: T.finalWMaxDeg * DEG, wnRoll: 0.5, rollMax: 10 * DEG, axisAccel: [0.3, aAx, aAx] as const }
+                  // roll: the rate the loop may command is what the cold-gas couples can stop again
+                  // (their torque over I_xx ≈ 1.3°/s²) — with the 0.3 rad/s² it assumed before, a
+                  // 12° error was turned at 4°/s and overshot by 4°
+                  const tRoll = Math.max(...v.couples.map((cp) => Math.abs(v.thrusters[cp.a].thrust * (v.thrusters[cp.a].pos.z * v.thrusters[cp.a].dir.y - v.thrusters[cp.a].pos.y * v.thrusters[cp.a].dir.z) * 2)))
+                  const aRoll = clamp((0.8 * tRoll) / n.I.x, 0.005, 0.3)
+                  return { ...gl, wn: pl.wn, zeta: pl.zeta, wMax: T.finalWMaxDeg * DEG, wnRoll: 0.5, rollMax: 10 * DEG, axisAccel: [aRoll, aAx, aAx] as const }
                 })()
                 : { ...gl, axisAccel: [T.landingAxisAccelX, T.landingAxisAccelYZ, T.landingAxisAccelYZ] },
           engines: caught || lostNow || engineCut ? ENGINES_OFF : cmdEngines, armsClose: arms, coil: "discharge", useRcs: oneEng && LAND.rollGas, rcsRollOnly: oneEng && LAND.rollGas, flapsDeployed: false, rollFirst: false,

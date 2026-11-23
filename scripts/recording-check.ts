@@ -29,6 +29,19 @@ console.log(`plan samples ${nOn}; flown inside the recoverable band in ${inBand}
 const pick = (zz: number): number => { let k = 0; for (let i = 0; i < n; i++) if (ph[i] >= 9 && z[i] > zz) k = i; return k }
 for (const h of [1000, 500, 200, 50, 10, 1]) { const i = pick(h); console.log(`  at ${h} m: t ${t[i].toFixed(1)} flown (${x[i].toFixed(2)}, ${y[i].toFixed(2)}) plan (${px[i].toFixed(2)}, ${py[i].toFixed(2)}, z ${pz[i].toFixed(1)}) band ±${tube[i].toFixed(2)} m, sink ${vu[i].toFixed(1)} limit ${vzl[i].toFixed(1)}, corridor ±${hard[i].toFixed(2)}`) }
 
+// ---- pin azimuth: the line through the two catch pins must be square to the arms on the way in
+{
+  const roll = col("rollAng")
+  let hi = 0, lo = 0, rails = NaN
+  for (let i = 0; i < n; i++) {
+    if (ph[i] < 9 || ph[i] > 10) continue
+    const d = Math.abs(roll[i]) * 180 / Math.PI
+    if (z[i] > 500) hi = Math.max(hi, d); else lo = Math.max(lo, d)
+    if (z[i] > 0) rails = d
+  }
+  console.log(`pin-axis error on one engine: up to ${hi.toFixed(1)}° above 500 m, up to ${lo.toFixed(2)}° below it, ${rails.toFixed(2)}° when the pins reach the rails`)
+}
+
 // ---- after the catch: the ship must stay where it landed, on arms that do not move, engines off
 const arms = col("arms"), thrust = col("thrust"), pc = col("pinCount"), pl = col("pinLoad"), mass = col("mass")
 let iCatch = -1

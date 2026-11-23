@@ -71,6 +71,7 @@ describe("single-engine descent on the rig (flight software, no wind)", () => {
     expect(c.atRails).toBeLessThan(0.3)
     expect(c.overshoot).toBeLessThan(1)
     expect(c.rollAngMax).toBeLessThan(20)
+    expect(c.rollAngRails).toBeLessThan(0.5) // the pins arrive square to the arms
     expect(c.tiltMax).toBeLessThan(8)
   })
 

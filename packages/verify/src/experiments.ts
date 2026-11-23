@@ -260,6 +260,8 @@ export interface CaptureCase {
   readonly overshoot: number
   readonly tiltMax: number
   readonly rollAngMax: number
+  /** pin-axis azimuth error when the pins reach the rails (deg) */
+  readonly rollAngRails: number
   readonly fuel: number
   /** time spent slower than 2 m/s above the last 0.3 m (s): the hover time */
   readonly hover: number
@@ -276,6 +278,7 @@ export const captureCase = (x: number, y: number, vx = 0, vy = 0, h0 = 1300, vz 
   return {
     start: { x, y, vx, vy }, outcome: f.outcome, at1km: at1k ? Math.hypot(at1k.pin.x, at1k.pin.y) : NaN, atRails: Math.hypot(last.pin.x, last.pin.y),
     overshoot: mx.overshoot, tiltMax: mx.tiltMax, rollAngMax: f.samples.reduce((m, p) => Math.max(m, Math.abs(p.rollAng)), 0),
+    rollAngRails: touch ? Math.abs(touch.rollAng) : NaN,
     fuel: f.samples[0].header - last.header, hover: f.samples.filter((p) => p.pin.z > 0.3 && Math.abs(p.vel.z) < 2).length * 0.05,
     contactSpeed: touch ? Math.abs(touch.vel.z) : NaN,
   }

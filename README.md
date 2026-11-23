@@ -43,7 +43,7 @@ faked `caught`.
 | Item | State (2026-11-23) |
 |---|---|
 | M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps; cold gas for attitude until the flip, then for roll only); windy case open |
-| Recorded no-wind mission (`recording.bin`) | **`caught`**: flip-and-stop complete **1205 m** above the rails, 10 m off; at **1 km** the pins are **2.5 m** from the axis at 0.5 m/s lateral; then a vertical fall and a hoverslam — the pins touch the closed rails at ≈ 0.7 m/s, offset **0.03 m**, 0.5 s below 2 m/s, never climbing; engine cut on pin contact (thrust gone 0.44 s later), the ship then sags 4.7 cm on the rails, slides 1 cm and the locked arms do not move; **5.0 t** of the 26 t landing propellant left |
+| Recorded no-wind mission (`recording.bin`) | **`caught`**: flip-and-stop complete **1205 m** above the rails, 10 m off; at **1 km** the pins are **2.5 m** from the axis at 0.5 m/s lateral; then a vertical fall and a hoverslam — the pins touch the closed rails at ≈ 0.7 m/s, square to the arms (pin-axis error 0.3° below 500 m, 0.0° at the rails), offset **0.04 m**, 0.5 s below 2 m/s, never climbing; engine cut on pin contact (thrust gone 0.44 s later), the ship then sags 4.7 cm on the rails, slides 1 cm and the locked arms do not move; **5.0 t** of the 26 t landing propellant left |
 | Windy design (default wind scale) | `lost`: delivery ≈ 550–700 m off, descent runs out of propellant ≈ 5 m above the rails |
 | Delivery method | bank-plan aim corrected by verified 6-DOF rollouts → belly-flop plan by defect correction (fast model proposes, rollout decides) → nose pointed at the axis → flip ignited when its stop point reaches the axis → two-engine flip-and-stop → single-engine descent law on the verified pin-chain model. **Tuned point, not yet robust:** of 12 neighbouring tunings of the entry aim and gate, 5 delivered inside the belly flop's reach |
 | TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
@@ -193,7 +193,10 @@ the landing and not to what 2 800 s of entry handed it.
 - **Roll.** One off-centre gimballed engine has no roll authority (its roll torque is a by-product
   of its yaw torque). Without gas a 10 m correction across the rails left 0.7°/s of roll, which
   turned the pins 26° off the rails by touchdown: position 0.01 m, catch lost. The descent
-  therefore keeps the cold-gas roll couples on (pitch and yaw stay on the gimbal). This is a
+  therefore keeps the cold-gas roll couples on (pitch and yaw stay on the gimbal) and they hold the
+  pin azimuth from the hand-over down, not only near the arms: the two-engine flip hands the pins
+  over within ≈ 4° of the rails, the first single-engine correction rolls the hull up to 15°
+  through the gimbal's coupling, and the couples have it back inside 0.3° by 500 m. This is a
   deliberate deviation from "Raptors only inside the 200 m ring"; the alternative is a second
   running engine, which cannot throttle below 1.5 g and so cannot fall into the arms.
 - **Not robust yet.** The hand-over from the high-α glide is sensitive: a change of metres in a
