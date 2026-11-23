@@ -1,7 +1,7 @@
 import { type V3 } from "@ship/math"
 import { enuBasis, type Enu, geodeticToEcef, PAD2, type WindParams, meanWindEnu } from "@ship/earth"
 import { SHOCK_TABLE, type ShockTable } from "@ship/gas"
-import { type DesignParams, DEFAULT_DESIGN, makeVehicle, massProps, initialConsumables, type VehicleConfig } from "@ship/craft"
+import { type DesignParams, DEFAULT_DESIGN, type EngineCmd, makeVehicle, massProps, initialConsumables, type VehicleConfig } from "@ship/craft"
 import { type AeroModel, makeAeroModel } from "@ship/aero"
 import { makeThermalGrid, type ThermalGrid } from "@ship/heat"
 import { makeMhdModel, type MhdModel } from "@ship/mhd"
@@ -32,6 +32,11 @@ export interface World {
   readonly wind: WindParams
   /** prediction world: no thermal integration (the rollouts only need the trajectory) */
   readonly lite?: boolean
+  /**
+   * Test hook (model verification only, never set in a mission): replaces the engine commands that
+   * reach the actuators, after guidance and gimbal allocation — open-loop gimbal/throttle steps.
+   */
+  readonly actuatorOverride?: (t: number, cmds: readonly EngineCmd[]) => readonly EngineCmd[]
 }
 
 export const TRANSITION = { vLoft: 6000, qPitch: 9000, vPitchMax: 3800 } as const

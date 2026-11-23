@@ -43,11 +43,13 @@ faked `caught`.
 | Item | State (2026-11-22) |
 |---|---|
 | M3 — flip, landing, terminal, catch | **CAUGHT in still air** (no flaps, cold gas until the 200 m ring); windy case open |
-| Recorded no-wind mission (committed `recording.bin`) | **`caught`**: pins on the closed arms at 0.85 m/s, offset **3.03 m**, 7.3 t left; no flaps, cold gas until the 200 m ring |
+| Recorded no-wind mission (committed `recording.bin`) | **`caught`**: pins on the closed arms, offset **0.61 m**, 6.2 t of landing propellant left; no flaps, cold gas until the 200 m ring |
 | Windy design (default wind scale) | `lost`: delivery ≈ 550–700 m off, descent runs out of propellant ≈ 5 m above the rails |
 | Delivery method | belly plan chosen by 6-DOF rollouts to the flip-complete state (defect-corrected aim), then a single-engine velocity-field descent |
 | TPS | **bondline over:** tile 1650 K vs the SpaceX flight-tile claim 1673 K; NASA LI-900 1530 K is the conservative margin. Bondline 695–701 K vs 560 K **fails**; backing passes |
 | T‑mc (20-run wind/κ/B/mass ensemble) | **not run** |
+| Model verification (`packages/verify`) | isolated landing rig + plant identification: the gimbal pitch authority matches the analytic `T·L/I` within **2 %**, the catch pins sit at the hull centre of percussion (12.6 m vs 12.8 m), the throttle slews at 0.60 /s and reaches 90 % in 0.74 s. The reworked no-hover descent law (not flown yet) measured on the rig from 1 km: caught, **0.00 m** offset, contact 0.35 m/s, 2.1 s below 2 m/s |
+| Per-phase flight log | `docs/03-spec/flight/nowind/flight.md` (+ `spline.json`): every phase with its 10 spline knots and the flown geometry table (pins, velocity, tilt, gimbal, command, plan), written to be read, not replayed |
 | Typecheck | clean (`bun run typecheck`) |
 | Tests | 324 pass, 2 todo, 0 fail across 30 files (`bun test packages`) |
 | Full mission cost | ≈ 22–28 s wall for the whole 2900 s mission including 20 onboard prediction rollouts |
@@ -144,6 +146,38 @@ and starving the OpenCode server restarts it.
   law that closes the last metres. The belly plan's delivery (≈ 380–490 m at flip completion) is what
   the terminal has to absorb; the flip also translates the ship by ≈ v_h·4.5 s after ignition, which
   the point-mass belly model omits.
+
+## Verification, per-phase precision and the flight log
+
+`packages/verify` is the model-verification package: it builds the landing state directly (the same
+6-DOF plant, tower and flight software, no wind, no entry) so a landing change can be attributed to
+the landing and not to what 2 900 s of entry handed it.
+
+- `bun scripts/verify-model.ts` — plant identification and step responses. Measured: one gimbal
+  turns the hull at **0.54 /s² at the throttle floor and 1.47 /s² at full thrust** (`T·L/I`), the
+  side force at the *catch pins* cancels there (pins 12.6 m ahead of the CG, centre of percussion
+  12.8 m) — the pin position is a clean chain of integrators, while the CG has a right-half-plane
+  zero at 0.74 rad/s. That zero is why the old terminal's lateral law (`ω_n` 0.8, `k_p` 0.25,
+  `k_d` 1.1) is *linearly unstable*: its closed loop `s⁴+1.6s³+0.64s²+0.70s+0.16` fails the Routh
+  test. The ±4 m terminal hunting was that instability, bounded only by the acceleration caps.
+- `scripts/flight-log.ts` — writes `docs/03-spec/flight/nowind/`: per phase, the guidance's plan and
+  the flown geometry as tables and spline knots (positions in the catch frame: E across the rails,
+  N along them, U above the rail plane). This is the input for refining a phase: it shows at a
+  glance whether a phase's control is exact or merely survivable.
+- `scripts/refine-phases.ts` (phase-aware search) and `packages/verify/src/precision.ts` — a compute
+  budget is split over phases in proportion to the measured sensitivity of the final catch to an
+  error introduced there (a quadratic loss), inverse to the cost of one evaluation there. The
+  terminal gets resolution, the coast does not. The landing value is measured on the rig (`refine-phases.ts --measure`: 0.8 m per m/s); the
+  flip/belly/terminal values are still estimates and the code says so (`sensitivitySource`).
+- Open item, measured: **the ship is not yet over the arms at 1 km.** In the flown no-wind run it
+  crosses 1 km during the belly flop, 566 m from the catch axis, and the flip completes at 363 m
+  with a 111 m delivery. Raising the flip gate so the flip completes at 1 050 m (the `flipComplete`
+  knob) makes the *belly plan* miss by 1 074 m at the new ignition point — the aim and the gate are
+  one problem, so the gate stays at the flown value until the belly aim is searched with the new
+  per-phase optimizer. A verified terminal that enters vertically into the arms (the no-hover
+  hoverslam in `slamCommand`, measured 0.00 m / 0.35 m/s on the rig) is implemented but **not flown
+  in the published recording**: its 4.5° tilt cap cannot absorb the 111 m delivery, so the flown
+  descent is still the velocity-field law.
 
 ## Documentation
 

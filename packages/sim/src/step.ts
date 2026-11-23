@@ -189,11 +189,13 @@ export const step = (W: World, s: SimState, cmdFlaps: AftFlapCommand = s.flapCmd
   // pitch/yaw with one usable axis and the attitude diverged (measured: tilt 33° → 96° in 10 s).
   // Rest-to-rest slews cancel their own roll impulse; the cold-gas roll couples damp the remainder.
   const gim = allocateGimbals(veh.engines.slice(0, 3), thrusts, mp.xcg, tauRes, cmd.useRcs && !cmd.rcsRollOnly && s.cons.n2 > 0 ? rollCap : Infinity, cmd.rollFirst === true)
-  const eng = s.eng.map((e, i) => engineStep(veh.engines[i], e, {
+  const actCmds0: EngineCmd[] = s.eng.map((_, i) => ({
     ...engCmds[i],
     gp: bellG ? bellG.gp[i] ?? 0 : gim.gp[i] ?? 0,
     gy: bellG ? bellG.gy[i] ?? 0 : gim.gy[i] ?? 0,
-  }, dt))
+  }))
+  const actCmds = W.actuatorOverride ? W.actuatorOverride(s.t, actCmds0) : actCmds0
+  const eng = s.eng.map((e, i) => engineStep(veh.engines[i], e, actCmds[i], dt))
   const feedMain = s.mem.phase === "deorbitBurn" || s.mem.phase === "deorbitAlign"
   const propAvail = feedMain ? s.cons.loxMain + s.cons.ch4Main : s.cons.loxHeader + s.cons.ch4Header
   let engOut: EngineOut = sumEngines(eng.map((e, i) => engineThrust(veh.engines[i], e, atm.p, mp.xcg)))

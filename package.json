@@ -34,6 +34,7 @@
     "@ship/tower": "workspace:*",
     "@ship/gnc": "workspace:*",
     "@ship/sim": "workspace:*",
-    "@ship/view": "workspace:*"
+    "@ship/view": "workspace:*",
+    "@ship/verify": "workspace:*"
   }
 }

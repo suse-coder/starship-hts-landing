@@ -15,6 +15,7 @@
         "@ship/mhd": "workspace:*",
         "@ship/sim": "workspace:*",
         "@ship/tower": "workspace:*",
+        "@ship/verify": "workspace:*",
         "@ship/view": "workspace:*",
       },
       "devDependencies": {
@@ -41,6 +42,7 @@
         "@ship/heat": "workspace:*",
         "@ship/math": "workspace:*",
         "@ship/sim": "workspace:*",
+        "@ship/tower": "workspace:*",
         "@ship/view": "workspace:*",
         "three": "^0.187.0",
       },
@@ -78,6 +80,7 @@
         "@ship/gas": "workspace:*",
         "@ship/math": "workspace:*",
         "@ship/mhd": "workspace:*",
+        "@ship/tower": "workspace:*",
       },
     },
     "packages/heat": {
@@ -124,6 +127,18 @@
       "version": "0.1.0",
       "dependencies": {
         "@ship/math": "workspace:*",
+      },
+    },
+    "packages/verify": {
+      "name": "@ship/verify",
+      "version": "0.1.0",
+      "dependencies": {
+        "@ship/craft": "workspace:*",
+        "@ship/earth": "workspace:*",
+        "@ship/gnc": "workspace:*",
+        "@ship/math": "workspace:*",
+        "@ship/sim": "workspace:*",
+        "@ship/tower": "workspace:*",
       },
     },
     "packages/view": {
@@ -208,6 +223,8 @@
     "@ship/sim": ["@ship/sim@workspace:packages/sim"],
 
     "@ship/tower": ["@ship/tower@workspace:packages/tower"],
+
+    "@ship/verify": ["@ship/verify@workspace:packages/verify"],
 
     "@ship/view": ["@ship/view@workspace:packages/view"],
 
